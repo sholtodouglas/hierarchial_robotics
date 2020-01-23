@@ -8,6 +8,7 @@ import ur5_RL
 import time
 from common import *
 from SAC import *
+from TD3 import *
 import copy
 import psutil
 import multiprocessing as mp
