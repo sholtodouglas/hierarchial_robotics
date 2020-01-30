@@ -78,7 +78,7 @@ class HERReplayBuffer:
         elif strategy == 'final':
             selected_transition = transitions[-1]
 
-        goal = selected_transition[0]['achieved_goal']
+        goal = selected_transition[0]['achieved_goal'] # TODO shouldn't this be of o2 not o? i.e index 3?
         return goal # and in future, z.
 
 
@@ -98,14 +98,10 @@ class HERReplayBuffer:
 
         for transition_idx, transition in enumerate(episode):
 
-            if encoder != None:
-                o, a, r, o2, d, z = transition
-                o  = np.concatenate([o['observation'], z, o['desired_goal']])
-                o2 = np.concatenate([o2['observation'], z, o2['desired_goal']])
-            else:
-                o, a, r, o2, d = transition
-                o = np.concatenate([o['observation'], o['desired_goal']])
-                o2 = np.concatenate([o2['observation'], o2['desired_goal']])
+
+            o, a, r, o2, d = transition
+            o = np.concatenate([o['observation'], o['desired_goal']])
+            o2 = np.concatenate([o2['observation'], o2['desired_goal']])
 
             self.store(o, a, r, o2, d)
 
@@ -119,23 +115,16 @@ class HERReplayBuffer:
 
             for goal in sampled_achieved_goals:
 
-                if encoder != None:
-                    o, a, r, o2, d, z = copy.deepcopy(transition)
-                else:
-                    o, a, r, o2, d = copy.deepcopy(transition)
+
+                o, a, r, o2, d = copy.deepcopy(transition)
 
                 o['desired_goal'] = goal
                 o2['desired_goal'] = goal
 
                 r = self.env.compute_reward(goal, o2['desired_goal'], info = None) #i.e 1 for the most part
 
-
-                if encoder != None:
-                    o = np.concatenate([o['observation'], z, o['desired_goal']])
-                    o2 = np.concatenate([o2['observation'], z, o2['desired_goal']])
-                else:
-                    o = np.concatenate([o['observation'], o['desired_goal']])
-                    o2 = np.concatenate([o2['observation'], o2['desired_goal']])
+                o = np.concatenate([o['observation'], o['desired_goal']])
+                o2 = np.concatenate([o2['observation'], o2['desired_goal']])
 
                 self.store(o, a, r, o2, d)
 
@@ -143,7 +132,7 @@ class HERReplayBuffer:
 # This is our training loop.
 def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=500,
+        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=5000,
         max_ep_len=300, save_freq=1, load = False, exp_name = "Experiment_1", render = False, strategy = 'future', num_cpus = 'max'):
 
     print('Begin')
@@ -166,7 +155,8 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     # Get Env dimensions
     obs_dim = env.observation_space.spaces['observation'].shape[0] + env.observation_space.spaces['desired_goal'].shape[0]
     act_dim = env.action_space.shape[0]
-    SAC = SAC_model(env, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name)
+    act_limit = env.action_space.high[0]
+    SAC = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name)
     # Experience buffer
     replay_buffer = HERReplayBuffer(env, obs_dim, act_dim, replay_size, n_sampled_goal = 4, goal_selection_strategy = strategy)
     #Logging
@@ -180,16 +170,16 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
             LossPi, LossQ1, LossQ2, LossV, Q1Vals, Q2Vals, VVals, LogPi = model.train_step(batch)
 
     def train(env,s_i, max_ep_len,SAC, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker):
-        while steps_collected < total_steps:
-            episodes = rollout_trajectories(n_steps = max_ep_len,env = env,start_state=s_i, max_ep_len = max_ep_len, actor = SAC.actor.get_stochastic_action, summary_writer=summary_writer, current_total_steps = steps_collected, exp_name = exp_name, return_episode = True, goal_based = True)
-            steps_collected += episodes['n_steps']
-            [replay_buffer.store_hindsight_episode(e) for e in episodes['episodes']]
-            update_models(SAC, replay_buffer, steps = max_ep_len, batch_size = batch_size)
 
-            if steps_collected >= epoch_ticker:
-                SAC.save_weights()
-                rollout_trajectories(n_steps = max_ep_len*5,env = test_env, max_ep_len = max_ep_len, actor = SAC.actor.get_deterministic_action, summary_writer=summary_writer, current_total_steps = steps_collected, train = False, render = render, exp_name = exp_name, return_episode = True, goal_based = True)
-                epoch_ticker += steps_per_epoch
+        episodes = rollout_trajectories(n_steps = max_ep_len,env = env,start_state=s_i, max_ep_len = max_ep_len, actor = SAC.actor.get_stochastic_action, summary_writer=summary_writer, current_total_steps = steps_collected, exp_name = exp_name, return_episode = True, goal_based = True)
+        steps_collected += episodes['n_steps']
+        [replay_buffer.store_hindsight_episode(e) for e in episodes['episodes']]
+        update_models(SAC, replay_buffer, steps = max_ep_len, batch_size = batch_size)
+        if steps_collected >= epoch_ticker:
+            SAC.save_weights()
+            epoch_ticker += steps_per_epoch
+
+        return steps_collected, epoch_ticker
 
     # now collect epsiodes
     total_steps = steps_per_epoch * epochs
@@ -211,23 +201,24 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     # now act with our actor, and alternately collect data, then train.
     print('Done Initialisation, begin training')
 
-
-    try:
-        train(env,s_i, max_ep_len,SAC, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker)
-    except KeyboardInterrupt:
-        txt = input("What would you like to do: ")
-        if txt == 'v':
-            print('Visualising')
-            rollout_trajectories(n_steps = max_ep_len*5,env = test_env, max_ep_len = max_ep_len, actor = SAC.actor.get_deterministic_action, summary_writer=summary_writer, current_total_steps = steps_collected, train = False, render = render, exp_name = exp_name, return_episode = True, goal_based = True)
-        # regardless, return to training
-        train(env,s_i, max_ep_len,SAC, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker)
+    while steps_collected < total_steps:
+        try:
+            steps_collected, epoch_ticker = train(env,s_i, max_ep_len,SAC, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker)
+        except KeyboardInterrupt:
+            txt = input("\nWhat would you like to do: ")
+            if txt == 'v':
+                print('Visualising')
+                rollout_trajectories(n_steps = max_ep_len,env = test_env, max_ep_len = max_ep_len, actor = SAC.actor.get_deterministic_action, summary_writer=summary_writer, current_total_steps = steps_collected, train = False, render = render, exp_name = exp_name, return_episode = True, goal_based = True)
+            print('Returning to Training.')
+            if txt == 'q':
+                raise Exception
 
         
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default='pointMass-v0')
-    parser.add_argument('--hid', type=int, default=128)
+    parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)

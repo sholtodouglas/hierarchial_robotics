@@ -162,8 +162,9 @@ class ReplayBuffer:
 #@title SAC Model{ display-mode: "form" }
 class SAC_model():
   
-  def __init__(self, env, obs_dim, act_dim, hidden_sizes,lr = 0.0001,gamma = None, alpha = None, polyak = None,  load = False, exp_name = 'Exp1', path = 'saved_models/'):
-    self.env = env
+  def __init__(self, act_limit, obs_dim, act_dim, hidden_sizes,lr = 0.0001,gamma = None, alpha = None, polyak = None,  load = False, exp_name = 'Exp1', path = 'saved_models/'):
+    self.act_limit = act_limit
+    print(act_limit, '-----------------------')
     self.pi_optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
     self.value_optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
     self.gamma = gamma
@@ -193,10 +194,9 @@ class SAC_model():
     # Get Env dimensions
  
     # Action limit for clamping: critically, assumes all dimensions share the same bound!
-    act_limit = self.env.action_space.high[0]
+
     
-    
-    self.actor = mlp_gaussian_policy(act_dim, act_limit, hidden_sizes, activation, None)
+    self.actor = mlp_gaussian_policy(act_dim, self.act_limit, hidden_sizes, activation, None)
     # Create two q functions
     self.q_func1 = mlp(hidden_sizes+[1], activation, None)
     self.q_func2 = mlp(hidden_sizes+[1], activation, None)
@@ -343,7 +343,8 @@ def SAC(env_fn, ac_kwargs=dict(), seed=0,
     # Get Env dimensions
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
-    SAC = SAC_model(env, obs_dim, act_dim, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name)
+    act_limit = env.action_space.high[0]
+    SAC = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name)
     # Experience buffer
     replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 
