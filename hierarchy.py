@@ -79,7 +79,11 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
         if t % replan_interval == 0:
             if t > 0: # this is the second time we have entered this, so we can begin storing transitions
                 if substitute_action:
-                    action = o2['achieved_goal'] # validate actions as though the lower level is actually good at achieving goals.
+                    if lower_achieved_whole_state:
+                        action = o2['full_positional_state']
+                    else:
+                        action = o2['controllable_achieved_goal']
+                     # validate actions as though the lower level is actually good at achieving goals.
                 else:
                     action = sub_goal  # subgoal will already be defined.
                 episode_higher.append([higher_o1, action,r,o2, d])
@@ -187,7 +191,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     # Little bit of short term conif
     use_higher_level = True
     replan_interval = 30
-    lower_achieved_whole_state = False
+    lower_achieved_whole_state = True
     substitute_action = True
 
 
