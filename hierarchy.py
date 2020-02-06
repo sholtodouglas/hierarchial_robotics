@@ -86,7 +86,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                      # validate actions as though the lower level is actually good at achieving goals.
                 else:
                     action = sub_goal  # subgoal will already be defined.
-                episode_higher.append([higher_o1, action,r,o2, d])
+                if return_episode:
+                    episode_higher.append([higher_o1, action,r,o2, d])
                 higher_level_steps += 1
 
 
@@ -120,24 +121,24 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
         d = False if ep_len == max_ep_len else d
 
         if return_episode:
-                # we need to assign the desired goal as the subgoals, and potentially the achieved goal as the
-                # actor position not the full state.
-                # but tbh, achieved/desired goal should really be that of the entire state no? On the lower level
-                # it must include actor position.
-                o_store = o.copy()
-                o2_store = o2.copy()
-                o_store['desired_goal'] = sub_goal
-                o2_store['desired_goal'] = sub_goal
+            # we need to assign the desired goal as the subgoals, and potentially the achieved goal as the
+            # actor position not the full state.
+            # but tbh, achieved/desired goal should really be that of the entire state no? On the lower level
+            # it must include actor position.
+            o_store = o.copy()
+            o2_store = o2.copy()
+            o_store['desired_goal'] = sub_goal
+            o2_store['desired_goal'] = sub_goal
 
-                if lower_achieved_whole_state:
-                    o_store['achieved_goal'] = o_store['full_positional_state']
-                    o2_store['achieved_goal'] = o2_store['full_positional_state']
+            if lower_achieved_whole_state:
+                o_store['achieved_goal'] = o_store['full_positional_state']
+                o2_store['achieved_goal'] = o2_store['full_positional_state']
 
-                else:
-                    o_store['achieved_goal'] = o_store['controllable_achieved_goal']
-                    o2_store['achieved_goal'] = o2_store['controllable_achieved_goal']
-                r = env.compute_reward(o2_store['achieved_goal'], o2_store['desired_goal'], info = None)
-                episode_lower.append([o_store, a, r, o2_store, d])  # add the full transition to the episode.
+            else:
+                o_store['achieved_goal'] = o_store['controllable_achieved_goal']
+                o2_store['achieved_goal'] = o2_store['controllable_achieved_goal']
+            r = env.compute_reward(o2_store['achieved_goal'], o2_store['desired_goal'], info = None)
+            episode_lower.append([o_store, a, r, o2_store, d])  # add the full transition to the episode.
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
 
@@ -242,7 +243,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         [replay_buffer_lower.store_hindsight_episode(e) for e in episodes['episodes_lower']]
         [replay_buffer_higher.store_hindsight_episode(e) for e in episodes['episodes_higher']]
         update_models(SAC_lower, replay_buffer_lower, steps=max_ep_len, batch_size=batch_size)
-        update_models(SAC_higher, replay_buffer_higher, steps=episodes['n_steps_higher'], batch_size=batch_size)
+        update_models(SAC_higher, replay_buffer_higher, steps=episodes['n_steps_higher'], batch_size=batch_size) # gradient step it the same as the number of loweer steps because there are more.
 
         if steps_collected >= epoch_ticker:
             SAC_lower.save_weights()
@@ -312,10 +313,10 @@ if __name__ == '__main__':
     parser.add_argument('--max_ep_len', type=int,
                         default=400)  # fetch reach learns amazingly if 50, but not if 200 -why?
     parser.add_argument('--exp_name', type=str, default='experiment_1')
-    parser.add_argument('--load', type=bool, default=False)
-    parser.add_argument('--render', type=bool, default=False)
+    parser.add_argument('--load', type=str2bool, default=False)
+    parser.add_argument('--render', type=str2bool, default=False)
     parser.add_argument('--strategy', type=str, default='future')
-    parser.add_argument('--higher_level', type=bool, default=True)
+    parser.add_argument('--higher_level', type=str2bool, default=True)
 
     args = parser.parse_args()
 

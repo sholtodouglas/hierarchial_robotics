@@ -2,6 +2,7 @@
 import tensorflow as tf
 import numpy as np
 import copy
+import argparse
 
 
 def assign_variables(net1, net2):
@@ -142,31 +143,13 @@ def rollout_trajectories(n_steps, env, max_ep_len=200, actor=None, replay_buffer
     return n_steps
 
 
-# used in expert collection, and with conversion of episodes to HER
-# used in expert collection, and with conversion of episodes to HER
-#extra info is for resetting determinsiticly.
-def episode_to_trajectory(episode, flattened = False,  include_extra_info= False):
-  # episode arrives as a list of o, a, r, o2, d
-  # trajectory is two lists, one of o s, one of a s.
-  observations = []
-  actions = []
-  if include_extra_info:
-    extra_info= []
-  for transition in episode:
 
-    o, a, r, o2, d = transition
-
-    if flattened:
-      observations.append(o)
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
     else:
-      observations.append(o['observation'])
-
-    if include_extra_info:
-        extra_info.append(o['extra_info'])
-        
-    actions.append(a)
-  if include_extra_info:
-    return np.array(observations), np.array(actions), np.array(extra_info)
-  return np.array(observations), np.array(actions)
-
-
+        raise argparse.ArgumentTypeError('Boolean value expected.')

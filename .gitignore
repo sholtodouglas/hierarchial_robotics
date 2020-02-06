@@ -1,3 +1,4 @@
 /logs/*
 /saved_models/*
 /__pycache__/*
+/collected_data/*

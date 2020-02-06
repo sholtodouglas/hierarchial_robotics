@@ -400,8 +400,8 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--max_ep_len', type=int, default=200)
     parser.add_argument('--exp_name', type=str, default='experiment_1')
-    parser.add_argument('--load', type=bool, default=False)
-    parser.add_argument('--render', type=bool, default=False)
+    parser.add_argument('--load', type=str2bool, default=False)
+    parser.add_argument('--render', type=str2bool, default=False)
     args = parser.parse_args()
 
     experiment_name = '_' + args.env + '_Hidden_' + str(args.hid) + 'l_' + str(args.l)
