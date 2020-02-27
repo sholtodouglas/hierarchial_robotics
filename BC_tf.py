@@ -1,8 +1,5 @@
 import numpy as np
-from torch.optim import Adam
-from pytorch_shared import *
-import torch
-import torch.nn as nn
+import tensorflow as tf
 import gym
 import time
 import pybullet
@@ -10,7 +7,6 @@ import reach2D
 import pointMass
 from SAC import *
 from common import *
-from tensorboardX import SummaryWriter
 from gym import wrappers
 
 
@@ -20,24 +16,31 @@ from gym import wrappers
 def train_step(train_obs, train_acts, optimizer, policy, summary_writer, steps, batch_size = 512):
     indexes = np.random.choice(train_obs.shape[0], batch_size)
     obs, acts = train_obs[indexes, :], train_acts[indexes, :]
-    optimizer.zero_grad()
-    mu = policy(obs)
-    loss = ((acts - mu) ** 2).mean()
-    loss.backward()
-    optimizer.step()
-    summary_writer.add_scalar('BC_MSE_loss', loss, steps)
-    return loss
+    with tf.GradientTape() as tape:
+        mu, _, _, _, _ = policy(obs)
+        BC_loss = tf.reduce_sum(tf.losses.MSE(mu, acts))
+    # I know this happens every time, but at the moment cbf building the model before this. Besides, isn't comp intensive.
+    deterministic_variables = [x for x in policy.trainable_variables if 'log_std' not in x.name]
+    BC_gradients = tape.gradient(BC_loss, deterministic_variables)
+    optimizer.apply_gradients(zip(BC_gradients, deterministic_variables))
+
+    with summary_writer.as_default():
+        tf.summary.scalar('BC_MSE_loss', BC_loss, step=steps)
+
+    return BC_loss
 
 
 def test_step(test_obs, test_acts, policy, summary_writer, steps, batch_size = 512):
     indexes = np.random.choice(test_obs.shape[0], batch_size)
     obs = test_obs[indexes, :]
     acts = test_acts[indexes, :]
-    mu = policy(obs)
-    loss = ((acts - mu) ** 2).mean()
-    summary_writer.add_scalar('BC_MSE_loss', loss, steps)
-    return loss
+    mu, _, _, _, _ = policy(obs)
+    BC_loss = tf.reduce_sum(tf.losses.MSE(mu, acts))
 
+    with summary_writer.as_default():
+        tf.summary.scalar('BC_MSE_loss', BC_loss, step=steps)
+
+    return BC_loss
 
 def save_policy(policy, exp_name, path = 'saved_models/'):
     try:
@@ -45,8 +48,9 @@ def save_policy(policy, exp_name, path = 'saved_models/'):
     except Exception as e:
         # print(e)
         pass
-    torch.save(policy.state_dict(), path + exp_name + '/' + 'actor.pth')
-    print('Saved model at: ', path + exp_name + '/' + 'actor.pth')
+
+    policy.save_weights(path + exp_name + '/' + 'actor.h5')
+    print('Saved model at: ', path + exp_name + '/' + 'actor.h5')
 
 def behavioural_clone(filepath, env, exp_name, n_steps, batch_size, goal_based, architecture, max_ep_len = 200):
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
@@ -60,20 +64,18 @@ def behavioural_clone(filepath, env, exp_name, n_steps, batch_size, goal_based, 
 
     acts = data['acts']
 
-    obs, acts = torch.as_tensor(np.concatenate(obs, axis = 0), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(acts, axis = 0), dtype=torch.float32).cuda()
+    obs, acts = np.concatenate(obs, axis = 0), np.concatenate(acts, axis = 0)
     train_length = int(0.8 * (len(obs)))
     train_obs,train_acts  = obs[:train_length, :], acts[:train_length, :]
     valid_obs,  valid_acts  = obs[train_length:, :], acts[train_length:, :]
     print(train_obs.shape, valid_obs.shape)
-    obs_dim = env.observation_space.spaces['observation'].shape[0] + env.observation_space.spaces['desired_goal'].shape[0]
     act_dim, act_limit = env.action_space.shape[0], env.action_space.high[0]
 
     start_time = time.time()
     train_log_dir, valid_log_dir  = 'logs/' + 'BC_train_' +exp_name+'_:' + str(start_time),  'logs/' + 'BC_valid_' +exp_name+'_:' + str(start_time)
-    train_summary_writer, valid_summary_writer = SummaryWriter(train_log_dir), SummaryWriter(valid_log_dir)
-
-    policy = MLPActor(obs_dim, act_dim, hidden_sizes=architecture, act_limit=act_limit).cuda()
-    optimizer = Adam(policy.parameters(), lr=1e-4)
+    train_summary_writer, valid_summary_writer = tf.summary.create_file_writer(train_log_dir), tf.summary.create_file_writer(valid_log_dir)
+    policy = mlp_gaussian_policy(act_dim=act_dim, act_limit=act_limit, hidden_sizes=architecture)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
     print('Done Initialisation, begin training')
     steps = 0

@@ -125,14 +125,16 @@ def rollout_trajectories(n_steps, env, max_ep_len=200, actor=None, replay_buffer
             if return_episode:
                 episode_buffer.append(episode)
                 episode = []
+            if train:
+                print('Frame: ', t + current_total_steps, ' Return: ', ep_ret)
+                summary_string = 'Episode_return'
+            else:
+                print('Test Frame: ', t + current_total_steps, ' Return: ', ep_ret)
+                summary_string = 'Test_Episode_return'
+
             if summary_writer:
-                with summary_writer.as_default():
-                    if train:
-                        print('Frame: ', t + current_total_steps, ' Return: ', ep_ret)
-                        tf.summary.scalar('Episode_return', ep_ret, step=t + current_total_steps)
-                    else:
-                        print('Test Frame: ', t + current_total_steps, ' Return: ', ep_ret)
-                        tf.summary.scalar('Test_Episode_return', ep_ret, step=t + current_total_steps)
+                summary_writer.add_scalar(summary_string, ep_ret, t + current_total_steps)
+
             # reset the env if there are still steps to collect
             if t < n_steps - 1:
                 o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0

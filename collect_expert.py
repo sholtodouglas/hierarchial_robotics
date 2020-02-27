@@ -1,9 +1,9 @@
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+# import os
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 import gym
 import numpy as np
-from SAC import *
+from SAC_pytorch import *
 from HER import *
 from common import *
 import pointMass
@@ -54,11 +54,15 @@ def collect_expert(env, exp_name, n_steps, render, hierarchial, flatten, max_ep_
 			obs_dim = env.observation_space.spaces['observation'].shape[0] + \
 					  env.observation_space.spaces['desired_goal'].shape[0]
 
+
 		act_dim = env.action_space.shape[0]
 		act_limit = env.action_space.high[0]
-		SAC = SAC_model(act_limit, obs_dim, act_dim, [256, 256],load=True, exp_name=exp_name)
+		# Logging
+		model = SAC_model(act_limit, obs_dim, act_dim,[256, 256],load=True, exp_name=exp_name)
+
+
 		episodes = rollout_trajectories(n_steps=n_steps, env=env, max_ep_len=max_ep_len,
-										goal_based=not flatten, actor=SAC.actor.get_deterministic_action, train=False,
+										goal_based=not flatten, actor=model.actor.get_deterministic_action, train=False,
 										render=render, exp_name=exp_name, return_episode=True)
 
 		action_buff = []

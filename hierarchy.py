@@ -1,17 +1,24 @@
 
-import numpy as np
-import tensorflow as tf
+
+#import tensorflow as tf
 import gym
 import pybullet
 import pointMass #  the act of importing registers the env.
 import ur5_RL
 import time
 from common import *
-from SAC import *
+from SAC_pytorch import *
 from TD3 import *
 from HER import *
+import pickle
 import copy
 import psutil
+import numpy as np
+import time
+from pytorch_shared import *
+import torch
+from common import *
+from tensorboardX import SummaryWriter
 import multiprocessing as mp
 from tqdm import tqdm
 from natsort import natsorted, ns
@@ -19,14 +26,14 @@ from natsort import natsorted, ns
 # lower achieved_whole_state is whether to use the full state
 # substitute action is whether to swap out the action commanded by the higher level network for the actual achieved state of the lower level one. Following the openai RFR and Levy's paper.
 # use_higher_level is whether to actually use the higher level net or just use the lower one.  (use this mostly for testing).
-
+# subgoal testing interval is how often to do subgoal testing transitions. If sub_goal_tester None, doesn't happen. If a number, mod that.
 def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower=None, actor_higher= None, replan_interval = 30, lower_achieved_whole_state = True, substitute_action = True, use_higher_level = True, summary_writer=None,
                          current_total_steps=0,
                          render=False, train=True, exp_name=None, s_g=None, return_episode=False,
                          replay_trajectory=None,
                          compare_states=None, start_state=None, lstm_actor=None,
                          only_use_baseline=False,
-                         replay_obs=None, extra_info=None):
+                         replay_obs=None, extra_info=None, sub_goal_testing_interval = 2, sub_goal_tester = None):
 
 
     # reset the environment
@@ -74,35 +81,44 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
         past_state = [None]
 
     higher_level_steps = 0
+    force_replan = False
     for t in range(n_steps):
 
-        if t % replan_interval == 0:
+        if t % replan_interval == 0 or force_replan is True:
             if t > 0: # this is the second time we have entered this, so we can begin storing transitions
                 if substitute_action:
-                    if lower_achieved_whole_state:
-                        action = o2['full_positional_state']
-                    else:
-                        action = o2['controllable_achieved_goal']
+                    current_state =  o2['full_positional_state'] if lower_achieved_whole_state else o2['controllable_achieved_goal']
+                    old_state =  higher_o1['full_positional_state'] if lower_achieved_whole_state else higher_o1['controllable_achieved_goal']
+                    action = current_state - old_state
                      # validate actions as though the lower level is actually good at achieving goals.
                 else:
                     action = sub_goal  # subgoal will already be defined.
                 if return_episode:
+                    if sub_goal_tester and higher_level_steps % sub_goal_testing_interval == 0: # this round we are testing sub_goals.
+                        if r_lower < 0: # i.e, lower level failed to reach
+                            r = -replan_interval # severely punish setting unreachable sub goals.
                     episode_higher.append([higher_o1, action,r,o2, d])
                 higher_level_steps += 1
 
 
             higher_o1 = o  # keep it here for storage for the next transition
             if use_higher_level:
-                sub_goal = actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0))
+                current_state = o['full_positional_state'] if lower_achieved_whole_state else o['controllable_achieved_goal']
+                sub_goal = np.clip(current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
+
             else:
 
                 sub_goal = o['desired_goal']
+            force_replan = False
 
 
         if actor_lower == 'random':
             a = env.action_space.sample()
         else:
-            a = actor_lower(np.concatenate([o['observation'], sub_goal], axis=0))
+            if sub_goal_tester and higher_level_steps % sub_goal_testing_interval == 0: # this round we are testing sub_goals.
+                a = sub_goal_tester(np.concatenate([o['observation'], sub_goal], axis=0))
+            else:
+                a = actor_lower(np.concatenate([o['observation'], sub_goal], axis=0))
 
         # Step the env
         o2, r, d, _ = env.step(a)
@@ -137,8 +153,11 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
             else:
                 o_store['achieved_goal'] = o_store['controllable_achieved_goal']
                 o2_store['achieved_goal'] = o2_store['controllable_achieved_goal']
-            r = env.compute_reward(o2_store['achieved_goal'], o2_store['desired_goal'], info = None)
-            episode_lower.append([o_store, a, r, o2_store, d])  # add the full transition to the episode.
+            r_lower = env.compute_reward(o2_store['achieved_goal'], o2_store['desired_goal'], info = None)
+            if r_lower >= 0:
+                force_replan = True # replan if we reached our lower level goal.
+
+            episode_lower.append([o_store, a, r_lower, o2_store, d])  # add the full transition to the episode.
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
 
@@ -151,14 +170,16 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                 episode_lower = []
                 episode_buffer_higher.append(episode_higher)
                 episode_higher = []
+
+            if train:
+                print('Frame: ', t + current_total_steps, ' Return: ', ep_ret)
+                summary_string = 'Episode_return'
+            else:
+                print('Test Frame: ', t + current_total_steps, ' Return: ', ep_ret)
+                summary_string = 'Test_Episode_return'
             if summary_writer:
-                with summary_writer.as_default():
-                    if train:
-                        print('Frame: ', t + current_total_steps, ' Return: ', ep_ret)
-                        tf.summary.scalar('Episode_return', ep_ret, step=t + current_total_steps)
-                    else:
-                        print('Test Frame: ', t + current_total_steps, ' Return: ', ep_ret)
-                        tf.summary.scalar('Test_Episode_return', ep_ret, step=t + current_total_steps)
+                summary_writer.add_scalar(summary_string, ep_ret, t + current_total_steps)
+
             # reset the env if there are still steps to collect
             if t < n_steps - 1:
                 o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0
@@ -169,14 +190,16 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
     return n_steps
 
 
+
 # This is our training loop.
 def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                   steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-                  polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=500,
+                  polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=5000,
                   max_ep_len=300, save_freq=1, load=False, exp_name="Experiment_1", render=False, strategy='future',
                   num_cpus='max', use_higher_level = True, lower_achieved_whole_state = True):
     print('Begin')
-    tf.random.set_seed(seed)
+    #tf.random.set_seed(seed)
+    torch.manual_seed(seed)
     np.random.seed(seed)
     test_env = env_fn()
     print('test_env-', test_env)
@@ -191,8 +214,8 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
 
     # Little bit of short term conif
     use_higher_level = True
-    replan_interval = 30
-    lower_achieved_whole_state = True
+    replan_interval = 5
+    lower_achieved_whole_state = False
     substitute_action = True
 
 
@@ -224,12 +247,12 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     # Logging
     start_time = time.time()
     train_log_dir = 'logs/' + exp_name + str(int(start_time))
-    summary_writer = tf.summary.create_file_writer(train_log_dir)
+    summary_writer = SummaryWriter(train_log_dir)
 
     def update_models(model, replay_buffer, steps, batch_size):
         for j in range(steps):
             batch = replay_buffer.sample_batch(batch_size)
-            LossPi, LossQ1, LossQ2, LossV, Q1Vals, Q2Vals, VVals, LogPi = model.train_step(batch)
+            model.update(batch)
 
     def train(env, s_i, max_ep_len, SAC_lower, SAC_higher, summary_writer, steps_collected, exp_name, total_steps, replay_buffer_lower, replay_buffer_higher,
               batch_size, epoch_ticker, use_higher_level, substitute_action, replan_interval, lower_achieved_whole_state):
@@ -237,7 +260,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         episodes = rollout_trajectories_hierarchially(n_steps=max_ep_len, env=env, start_state=s_i, max_ep_len = max_ep_len, actor_lower = SAC_lower.actor.get_stochastic_action,
                                         actor_higher = SAC_higher.actor.get_stochastic_action, replan_interval = replan_interval,lower_achieved_whole_state = lower_achieved_whole_state,
                                         substitute_action = substitute_action, use_higher_level = use_higher_level, summary_writer = summary_writer, current_total_steps = steps_collected,
-                                        exp_name = exp_name, return_episode = True)
+                                        exp_name = exp_name, return_episode = True, sub_goal_testing_interval = 2, sub_goal_tester = SAC_lower.actor.get_deterministic_action)
 
         steps_collected += episodes['n_steps_lower']
         [replay_buffer_lower.store_hindsight_episode(e) for e in episodes['episodes_lower']]
@@ -295,9 +318,14 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                                 substitute_action = substitute_action, use_higher_level = use_higher_level, train=False, render=render, summary_writer = summary_writer,
                                 current_total_steps = steps_collected,
                                 exp_name = exp_name, return_episode = True)
-            print('Returning to Training.')
-            if txt == 'q':
+
+            elif txt == 'q':
                 raise Exception
+            elif txt == 's':
+                with open('collected_data/filename.pickle', 'wb') as handle:
+                    pickle.dump(replay_buffer_higher, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                print('Saved buff')
+            print('Returning to Training.')
 
 # TODO: Visualise subgoal, and add use higher  etc as params.
 if __name__ == '__main__':
@@ -311,7 +339,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=1500)
     parser.add_argument('--max_ep_len', type=int,
-                        default=400)  # fetch reach learns amazingly if 50, but not if 200 -why?
+                        default=200)  # fetch reach learns amazingly if 50, but not if 200 -why?
     parser.add_argument('--exp_name', type=str, default='experiment_1')
     parser.add_argument('--load', type=str2bool, default=False)
     parser.add_argument('--render', type=str2bool, default=False)
