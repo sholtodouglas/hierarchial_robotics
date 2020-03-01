@@ -154,10 +154,10 @@ class ReplayBuffer:
 
     def sample_batch(self, batch_size=32):
         idxs = np.random.randint(0, self.size, size=batch_size)
-        return dict(obs1=self.obs1_buf[idxs],
+        return dict(obs=self.obs1_buf[idxs],
                     obs2=self.obs2_buf[idxs],
-                    acts=self.acts_buf[idxs],
-                    rews=self.rews_buf[idxs],
+                    act=self.acts_buf[idxs],
+                    rew=self.rews_buf[idxs],
                     done=self.done_buf[idxs])
 
 #@title SAC Model{ display-mode: "form" }
@@ -235,10 +235,10 @@ class SAC_model():
   @tf.function
   def update(self, batch):
     with tf.GradientTape() as actor_tape, tf.GradientTape() as value_tape:
-      x = batch['obs1']
+      x = batch['obs']
       x2 = batch['obs2']
-      a = batch['acts']
-      r = batch['rews']
+      a = batch['act']
+      r = batch['rew']
       d = batch['done']
 
       mu, pi, logp_pi, _, _ = self.actor(x)

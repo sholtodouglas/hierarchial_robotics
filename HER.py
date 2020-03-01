@@ -6,7 +6,10 @@ import pointMass #  the act of importing registers the env.
 import ur5_RL
 import time
 from common import *
-from SAC import *
+# if tensorflow
+from SAC_tf2 import *
+# if pytorch
+#from SAC import *
 from TD3 import *
 import copy
 import psutil
@@ -77,7 +80,10 @@ class HERReplayBuffer:
                     act=self.acts_buf[idxs],
                     rew=self.rews_buf[idxs],
                     done=self.done_buf[idxs])
-        batch =  {k: torch.as_tensor(v, dtype=torch.float32).cuda() for k, v in batch.items()}
+        # if tensorflow
+
+        # if pytorch
+        #batch =  {k: torch.as_tensor(v, dtype=torch.float32).cuda() for k, v in batch.items()}
         batch['PER_tree_idxs'] = tree_idxs
         return batch
 
@@ -176,7 +182,10 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     act_limit = env.action_space.high[0]
     replay_buffer = HERReplayBuffer(env, obs_dim, act_dim, replay_size, n_sampled_goal = 4, goal_selection_strategy = strategy)
     #Logging
-    model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name, replay_buffer=replay_buffer)
+    #if tensorflow
+    model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name)
+    # if pytorch
+    #model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name, replay_buffer=replay_buffer)
     #model = TD3_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'], pi_lr=lr, q_lr=lr, gamma=gamma, alpha=alpha,polyak=polyak,load=load,exp_name=exp_name,replay_buffer=replay_buffer)
     # Experience buffer
 
