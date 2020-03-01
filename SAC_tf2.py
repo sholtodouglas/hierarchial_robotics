@@ -17,6 +17,7 @@ import ur5_RL
 import tensorflow_probability as tfp
 from gym import wrappers
 from common import *
+from tensorboardX import SummaryWriter
 tfd = tfp.distributions
 
 
@@ -351,7 +352,7 @@ def SAC(env_fn, ac_kwargs=dict(), seed=0,
     # Logging
     start_time = time.time()
     train_log_dir = 'logs/' + exp_name+str(int(start_time))
-    summary_writer = tf.summary.create_file_writer(train_log_dir)
+    summary_writer = SummaryWriter(train_log_dir)
 
     def update_models(model, replay_buffer, steps, batch_size):
         for j in range(steps):
