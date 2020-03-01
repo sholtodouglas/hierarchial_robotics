@@ -7,7 +7,7 @@ import pointMass #  the act of importing registers the env.
 import ur5_RL
 import time
 from common import *
-from SAC_pytorch import *
+from SAC import *
 from TD3 import *
 from HER import *
 import pickle
@@ -103,8 +103,11 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
             higher_o1 = o  # keep it here for storage for the next transition
             if use_higher_level:
-                current_state = o['full_positional_state'] if lower_achieved_whole_state else o['controllable_achieved_goal']
-                sub_goal = np.clip(current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
+                # current_state = o['full_positional_state'] if lower_achieved_whole_state else o['controllable_achieved_goal']
+                # sub_goal = np.clip(current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
+
+
+                sub_goal = np.clip(actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
 
             else:
 

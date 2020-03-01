@@ -30,7 +30,7 @@ class MLPActor(nn.Module):
     def __init__(self, obs_dim, act_dim, hidden_sizes, act_limit, activation=nn.ReLU):
         super().__init__()
         pi_sizes = [obs_dim] + list(hidden_sizes) + [act_dim]
-        self.pi = mlp(pi_sizes, activation, nn.Tanh)
+        self.pi = mlp(pi_sizes, activation)
         self.act_limit = act_limit
 
     def forward(self, obs):

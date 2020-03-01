@@ -5,7 +5,7 @@ import time
 import pybullet
 import reach2D
 import pointMass
-from SAC import *
+from SAC_tf2 import *
 from hierarchy import *
 from common import *
 from gym import wrappers
@@ -112,7 +112,7 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
-    replan_interval = 20
+    replan_interval = 10
     lower_achieved_whole_state = True
 
     data = np.load(filepath)
@@ -181,8 +181,8 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
 
 
 
-# python relay_learning.py --filepath collected_data/10000HER2_pointMass-v0_Hidden_256l_2.npz
-# python relay_learning.py --filepath collected_data/20000HER2_pointMassObject-v0_Hidden_256l_2.npz --env pointMassObject-v0
+# python relay_learning_tf.py --filepath collected_data/10000HER2_pointMass-v0_Hidden_256l_2.npz
+# python relay_learning_tf.py --filepath collected_data/20000HER2_pointMassObject-v0_Hidden_256l_2.npz --env pointMassObject-v0
 
 if __name__ == '__main__':
     import argparse

@@ -3,7 +3,7 @@
 
 import gym
 import numpy as np
-from SAC_pytorch import *
+from SAC import *
 from HER import *
 from common import *
 import pointMass

@@ -1,12 +1,15 @@
 import numpy as np
-import tensorflow as tf
+from tensorboardX import SummaryWriter
 import gym
 import time
+from pytorch_shared import *
+import torch
 import pybullet
 import reach2D
 import pointMass
 from SAC import *
 from hierarchy import *
+from torch.optim import Adam
 from common import *
 from gym import wrappers
 
@@ -21,7 +24,7 @@ from gym import wrappers
 
 def sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval = 15):
     # first thing we need to do is sample a couple of trajectories
-    num_trajectories = 10
+    num_trajectories = 40
     traj_indexes = np.random.choice(obs.shape[0], num_trajectories)
 
     # then, in each trajectory take a random start and end
@@ -73,37 +76,35 @@ def sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_int
         low_in_array.append(low_in)
         low_out_array.append(low_acts)
 
-    return np.concatenate(high_in_array), np.concatenate(high_out_array), np.concatenate(low_in_array), np.concatenate(low_out_array)
+    return torch.as_tensor(np.concatenate(high_in_array), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(high_out_array), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(low_in_array), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(low_out_array), dtype=torch.float32).cuda()
 
-def train_step(obs, ags, higher_level_acts, lower_level_acts, replan_interval, low_policy, high_policy ,optimizer, summary_writer, steps):
+
+def train_step(obs, ags, higher_level_acts, lower_level_acts, replan_interval, low_policy, high_policy ,high_optimizer, low_optimizer, summary_writer, steps):
+    low_optimizer.zero_grad()
+    high_optimizer.zero_grad()
     high_in, high_out, low_in, low_out = sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval)
 
-    with tf.GradientTape() as tape:
-        mu_low, _, _, _, _ = low_policy(low_in)
-        mu_high,_,_,_,_ = high_policy(high_in)
-        low_loss, high_loss = tf.reduce_sum(tf.losses.MSE(mu_low, low_out)), tf.reduce_sum(tf.losses.MSE(mu_high, high_out))
-        BC_loss = low_loss + high_loss
+    mu_low = low_policy(low_in)
+    mu_high = high_policy(high_in)
+    low_loss, high_loss = ((mu_low - low_out) ** 2).mean(), ((mu_high - high_out) ** 2).mean()
+    low_loss.backward()
+    low_optimizer.step()
+    high_loss.backward()
+    high_optimizer.step()
+    loss = low_loss + high_loss
+    summary_writer.add_scalar('relay_low_loss', low_loss, steps)
+    summary_writer.add_scalar('relay_high_loss', high_loss, steps)
 
-    # I know this happens every time, but at the moment cbf building the model before this. Besides, isn't comp intensive.
-    deterministic_variables = [x for x in low_policy.trainable_variables if 'log_std' not in x.name] + [x for x in high_policy.trainable_variables if 'log_std' not in x.name]
-    BC_gradients = tape.gradient(BC_loss, deterministic_variables)
-    optimizer.apply_gradients(zip(BC_gradients, deterministic_variables))
-
-    with summary_writer.as_default():
-        tf.summary.scalar('relay_low_loss', low_loss, step=steps)
-        tf.summary.scalar('relay_high_loss', high_loss, step=steps)
-
-    return BC_loss
+    return loss
 
 
 def test_step(obs, ags, higher_level_acts, lower_level_acts, replan_interval, low_policy, high_policy, summary_writer, steps):
     high_in, high_out, low_in, low_out = sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval)
-    mu_low, _, _, _, _ = low_policy(low_in)
-    mu_high, _, _, _, _ = high_policy(high_in)
-    low_loss, high_loss = tf.reduce_sum(tf.losses.MSE(mu_low, low_out)), tf.reduce_sum(tf.losses.MSE(mu_high, high_out))
-    with summary_writer.as_default():
-        tf.summary.scalar('relay_low_loss', low_loss, step=steps)
-        tf.summary.scalar('relay_high_loss', high_loss, step=steps)
+    mu_low = low_policy(low_in)
+    mu_high = high_policy(high_in)
+    low_loss, high_loss = ((mu_low - low_out) ** 2).mean(), ((mu_high - high_out) ** 2).mean()
+    summary_writer.add_scalar('relay_low_loss', low_loss, steps)
+    summary_writer.add_scalar('relay_high_loss', high_loss, steps)
 
     return low_loss, high_loss
 
@@ -131,6 +132,8 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
     train_obs, train_ags, train_higher_level_acts, train_lower_level_acts  = obs[:train_length, :,:], ags[:train_length, :,:], higher_level_acts[:train_length, :,:], lower_level_acts[:train_length, :,:]
     valid_obs, valid_ags, valid_higher_level_acts, valid_lower_level_acts = obs[train_length:, :,:], ags[train_length:, :,:], higher_level_acts[train_length:, :,:], lower_level_acts[train_length:, :,:]
 
+
+
     # Get Env dimensions for networks
     obs_dim_higher = env.observation_space.spaces['observation'].shape[0] + \
                      env.observation_space.spaces['desired_goal'].shape[0]
@@ -143,17 +146,20 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
 
     start_time = time.time()
     train_log_dir, valid_log_dir  = 'logs/' + 'BC_train_' +exp_name+'_:' + str(start_time),  'logs/' + 'BC_valid_' +exp_name+'_:' + str(start_time)
-    train_summary_writer, valid_summary_writer = tf.summary.create_file_writer(train_log_dir), tf.summary.create_file_writer(valid_log_dir)
-    high_policy = mlp_gaussian_policy(act_dim=act_dim_higher, act_limit=act_limit_higher, hidden_sizes=architecture)
-    low_policy = mlp_gaussian_policy(act_dim=act_dim_lower, act_limit=act_limit_lower, hidden_sizes=architecture)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    train_summary_writer, valid_summary_writer = SummaryWriter(train_log_dir), SummaryWriter(valid_log_dir)
+
+    high_policy = MLPActor(obs_dim_higher, act_dim_higher, hidden_sizes=architecture, act_limit=act_limit_higher).cuda()
+    low_policy = MLPActor(obs_dim_lower, act_dim_lower, hidden_sizes=architecture, act_limit=act_limit_lower).cuda()
+    high_optimizer = Adam(high_policy.parameters(), lr=1e-4)
+    low_optimizer = Adam(low_policy.parameters(), lr=1e-4)
+
 
     print('Done Initialisation, begin training')
     steps = 0
     while steps < n_steps:
         try:
             train_step(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, low_policy, high_policy,
-                       optimizer, train_summary_writer, steps)
+                       high_optimizer, low_optimizer, train_summary_writer, steps)
 
             if steps % 500 == 0:
                 l_low, l_high = test_step(valid_obs, valid_ags, valid_higher_level_acts, valid_lower_level_acts, replan_interval, low_policy,
@@ -190,7 +196,7 @@ if __name__ == '__main__':
     parser.add_argument('--filepath', type=str, default="")
     parser.add_argument('--env', type=str, default='pointMass-v0')
     parser.add_argument('--exp_name', type=str, default=None)
-    parser.add_argument('--n_steps', type=int, default=20000)
+    parser.add_argument('--n_steps', type=int, default=50000)
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)

@@ -6,7 +6,7 @@ import pointMass #  the act of importing registers the env.
 import ur5_RL
 import time
 from common import *
-from SAC_pytorch import *
+from SAC import *
 from TD3 import *
 import copy
 import psutil
