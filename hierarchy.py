@@ -33,7 +33,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                          replay_trajectory=None,
                          compare_states=None, start_state=None, lstm_actor=None,
                          only_use_baseline=False,
-                         replay_obs=None, extra_info=None, sub_goal_testing_interval = 2, sub_goal_tester = None):
+                         replay_obs=None, extra_info=None, sub_goal_testing_interval = 2, sub_goal_tester = None, relative =True):
 
 
     # reset the environment
@@ -103,11 +103,11 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
             higher_o1 = o  # keep it here for storage for the next transition
             if use_higher_level:
-                # current_state = o['full_positional_state'] if lower_achieved_whole_state else o['controllable_achieved_goal']
-                # sub_goal = np.clip(current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
-
-
-                sub_goal = np.clip(actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
+                if relative:
+                    current_state = o['full_positional_state'] if lower_achieved_whole_state else o['controllable_achieved_goal']
+                    sub_goal = np.clip(current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
+                else:
+                    sub_goal = np.clip(actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
 
             else:
 
@@ -197,7 +197,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 # This is our training loop.
 def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                   steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-                  polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=5000,
+                  polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=2500,
                   max_ep_len=300, save_freq=1, load=False, exp_name="Experiment_1", render=False, strategy='future',
                   num_cpus='max', use_higher_level = True, lower_achieved_whole_state = True):
     print('Begin')

@@ -7,6 +7,7 @@ import gym
 import time
 import pybullet
 import reach2D
+import os
 import pointMass
 from SAC import *
 from common import *

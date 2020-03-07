@@ -113,7 +113,7 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
-    replan_interval = 20
+    replan_interval = 5
     lower_achieved_whole_state = True
 
     data = np.load(filepath)
@@ -180,7 +180,7 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
                                                    lower_achieved_whole_state=lower_achieved_whole_state,
                                                    train=False, render=True, use_higher_level = True,
                                                    current_total_steps=steps,
-                                                   exp_name=exp_name)
+                                                   exp_name=exp_name, relative = False)
             print('Returning to Training.')
             if txt == 'q':
                 raise Exception

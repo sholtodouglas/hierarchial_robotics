@@ -1,15 +1,15 @@
 
-#import tensorflow as tf
+TF = False
 import gym
 import pybullet
 import pointMass #  the act of importing registers the env.
 import ur5_RL
 import time
 from common import *
-# if tensorflow
-from SAC_tf2 import *
-# if pytorch
-#from SAC import *
+if TF:
+    from SAC_tf2 import *
+else:
+    from SAC import *
 from TD3 import *
 import copy
 import psutil
@@ -80,10 +80,10 @@ class HERReplayBuffer:
                     act=self.acts_buf[idxs],
                     rew=self.rews_buf[idxs],
                     done=self.done_buf[idxs])
-        # if tensorflow
-
-        # if pytorch
-        #batch =  {k: torch.as_tensor(v, dtype=torch.float32).cuda() for k, v in batch.items()}
+        if TF:
+            pass
+        else:
+            batch =  {k: torch.as_tensor(v, dtype=torch.float32).cuda() for k, v in batch.items()}
         batch['PER_tree_idxs'] = tree_idxs
         return batch
 
@@ -154,7 +154,7 @@ class HERReplayBuffer:
 # This is our training loop.
 def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=5000,
+        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=2000,
         max_ep_len=300, save_freq=1, load = False, exp_name = "Experiment_1", render = False, strategy = 'future', num_cpus = 'max'):
 
     print('Begin')
@@ -182,11 +182,11 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     act_limit = env.action_space.high[0]
     replay_buffer = HERReplayBuffer(env, obs_dim, act_dim, replay_size, n_sampled_goal = 4, goal_selection_strategy = strategy)
     #Logging
-    #if tensorflow
-    model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name)
-    # if pytorch
-    #model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name, replay_buffer=replay_buffer)
-    #model = TD3_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'], pi_lr=lr, q_lr=lr, gamma=gamma, alpha=alpha,polyak=polyak,load=load,exp_name=exp_name,replay_buffer=replay_buffer)
+    if TF:
+        model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name)
+    else:
+        model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name, replay_buffer=replay_buffer)
+        #model = TD3_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'], pi_lr=lr, q_lr=lr, gamma=gamma, alpha=alpha,polyak=polyak,load=load,exp_name=exp_name,replay_buffer=replay_buffer)
     # Experience buffer
 
     start_time = time.time()
@@ -257,6 +257,7 @@ if __name__ == '__main__':
     parser.add_argument('--load', type=str2bool, default=False)
     parser.add_argument('--render', type=str2bool, default=False)
     parser.add_argument('--strategy', type=str, default='future')
+
 
 
     args = parser.parse_args()
