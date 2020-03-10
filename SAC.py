@@ -18,7 +18,7 @@ from gym import wrappers
 # @title SAC Model{ display-mode: "form" }
 class SAC_model():
 
-    def __init__(self, act_limit, obs_dim, act_dim, hidden_sizes, lr=0.0001, gamma=None, alpha=None, polyak=None,
+    def __init__(self, act_limit, obs_dim, act_dim, hidden_sizes, lr=1e-3, gamma=0.99, alpha=0.2, polyak=0.995,
                  load=False, exp_name='Exp1', replay_buffer = None, path='saved_models/'):
         self.act_limit = act_limit
         self.gamma = gamma
@@ -68,7 +68,7 @@ class SAC_model():
         # Bellman backup for Q functions
         with torch.no_grad():
             # Target actions come from *current* policy
-            a2, logp_a2 = self.ac.pi(o2)
+            a2, logp_a2, _ = self.ac.pi(o2)
 
             # Target Q-values
             q1_pi_targ = self.ac_targ.q1(o2, a2)
@@ -92,7 +92,7 @@ class SAC_model():
     # Set up function for computing SAC pi loss
     def compute_loss_pi(self,data):
         o = data['obs']
-        pi, logp_pi = self.ac.pi(o)
+        pi, logp_pi, _ = self.ac.pi(o)
         q1_pi = self.ac.q1(o, pi)
         q2_pi = self.ac.q2(o, pi)
         q_pi = torch.min(q1_pi, q2_pi)

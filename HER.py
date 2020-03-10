@@ -73,6 +73,7 @@ class HERReplayBuffer:
 
 
     def sample_batch(self, batch_size=32):
+
         #idxs = np.random.randint(0, self.size, size=batch_size)
         tree_idxs, idxs = self.PER.sample(batch_size)
         batch =  dict(obs=self.obs1_buf[idxs],
@@ -95,8 +96,6 @@ class HERReplayBuffer:
         if strategy == 'future':
             selected_idx = np.random.choice(np.arange(transition_idx + 1, len(transitions)))
             selected_transition = transitions[selected_idx]
-            # here is where we get the obs and acts for the sequence up till there.
-            # and here is where we will encode it, and get a nice z.
         elif strategy == 'final':
             selected_transition = transitions[-1]
 
@@ -125,7 +124,7 @@ class HERReplayBuffer:
             o = np.concatenate([o['observation'], o['desired_goal']])
             o2 = np.concatenate([o2['observation'], o2['desired_goal']])
 
-            self.store(o, a, r, o2, d)
+            #self.store(o, a, r, o2, d) # already done in the rollout loop
 
             if transition_idx == len(episode)-1:
                 selection_strategy = 'final'
@@ -154,7 +153,7 @@ class HERReplayBuffer:
 # This is our training loop.
 def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=2000,
+        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=0,
         max_ep_len=300, save_freq=1, load = False, exp_name = "Experiment_1", render = False, strategy = 'future', num_cpus = 'max'):
 
     print('Begin')
@@ -200,10 +199,10 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
 
     def train(env,s_i, max_ep_len,model, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker):
 
-        episodes = rollout_trajectories(n_steps = max_ep_len,env = env,start_state=s_i, max_ep_len = max_ep_len, actor = model.actor.get_stochastic_action, summary_writer=summary_writer, current_total_steps = steps_collected, exp_name = exp_name, return_episode = True, goal_based = True)
+        episodes = rollout_trajectories(n_steps = max_ep_len,env = env,start_state=s_i, max_ep_len = max_ep_len, actor = model.actor.get_stochastic_action, summary_writer=summary_writer, current_total_steps = steps_collected, exp_name = exp_name, return_episode = True, goal_based = True, replay_buffer=replay_buffer, model = model, batch_size=batch_size)
         steps_collected += episodes['n_steps']
         [replay_buffer.store_hindsight_episode(e) for e in episodes['episodes']]
-        update_models(model, replay_buffer, steps = max_ep_len, batch_size = batch_size)
+        #update_models(model, replay_buffer, steps = max_ep_len, batch_size = batch_size)
         if steps_collected >= epoch_ticker:
             model.save_weights()
             epoch_ticker += steps_per_epoch
@@ -222,17 +221,19 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     if not load:
     # collect some initial random steps to initialise
 
-        episodes = rollout_trajectories(n_steps = start_steps,env = env, start_state=s_i,max_ep_len = max_ep_len, actor = 'random', summary_writer = summary_writer, exp_name = exp_name, return_episode = True, goal_based = True)
+        episodes = rollout_trajectories(n_steps = start_steps,env = env, start_state=s_i,max_ep_len = max_ep_len, actor = 'random', summary_writer = summary_writer, exp_name = exp_name, return_episode = True, goal_based = True, replay_buffer = replay_buffer, model=model, batch_size=batch_size)
         steps_collected += episodes['n_steps']
         [replay_buffer.store_hindsight_episode(e) for e in episodes['episodes']]
-        update_models(model, replay_buffer, steps = steps_collected, batch_size = batch_size)
+        #update_models(model, replay_buffer, steps = steps_collected, batch_size = batch_size)
 
     # now act with our actor, and alternately collect data, then train.
     print('Done Initialisation, begin training')
 
     while steps_collected < total_steps:
         try:
+
             steps_collected, epoch_ticker = train(env,s_i, max_ep_len,model, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker)
+
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
             if txt == 'v':

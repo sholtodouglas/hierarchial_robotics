@@ -27,7 +27,7 @@ from natsort import natsorted, ns
 # substitute action is whether to swap out the action commanded by the higher level network for the actual achieved state of the lower level one. Following the openai RFR and Levy's paper.
 # use_higher_level is whether to actually use the higher level net or just use the lower one.  (use this mostly for testing).
 # subgoal testing interval is how often to do subgoal testing transitions. If sub_goal_tester None, doesn't happen. If a number, mod that.
-def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower=None, actor_higher= None, replan_interval = 30, lower_achieved_whole_state = True, substitute_action = True, use_higher_level = True, summary_writer=None,
+def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower=None, actor_higher= None, replan_interval = 30, lower_achieved_state = True, substitute_action = True, use_higher_level = True, summary_writer=None,
                          current_total_steps=0,
                          render=False, train=True, exp_name=None, s_g=None, return_episode=False,
                          replay_trajectory=None,
@@ -87,8 +87,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
         if t % replan_interval == 0 or force_replan is True:
             if t > 0: # this is the second time we have entered this, so we can begin storing transitions
                 if substitute_action:
-                    current_state =  o2['full_positional_state'] if lower_achieved_whole_state else o2['controllable_achieved_goal']
-                    old_state =  higher_o1['full_positional_state'] if lower_achieved_whole_state else higher_o1['controllable_achieved_goal']
+                    current_state =  o2[lower_achieved_state]
+                    old_state =  higher_o1[lower_achieved_state]
                     action = current_state - old_state
                      # validate actions as though the lower level is actually good at achieving goals.
                 else:
@@ -104,7 +104,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
             higher_o1 = o  # keep it here for storage for the next transition
             if use_higher_level:
                 if relative:
-                    current_state = o['full_positional_state'] if lower_achieved_whole_state else o['controllable_achieved_goal']
+                    current_state = o[lower_achieved_state]
                     sub_goal = np.clip(current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
                 else:
                     sub_goal = np.clip(actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
@@ -116,6 +116,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
 
         if actor_lower == 'random':
+
             a = env.action_space.sample()
         else:
             if sub_goal_tester and higher_level_steps % sub_goal_testing_interval == 0: # this round we are testing sub_goals.
@@ -128,7 +129,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
 
         if render:
-            env.visualise_sub_goal(sub_goal, lower_achieved_whole_state=lower_achieved_whole_state)  # visualise yay!
+            env.visualise_sub_goal(sub_goal, sub_goal_state=lower_achieved_state)  # visualise yay!
             env.render(mode='human')
 
         ep_ret += r
@@ -149,13 +150,10 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
             o_store['desired_goal'] = sub_goal
             o2_store['desired_goal'] = sub_goal
 
-            if lower_achieved_whole_state:
-                o_store['achieved_goal'] = o_store['full_positional_state']
-                o2_store['achieved_goal'] = o2_store['full_positional_state']
 
-            else:
-                o_store['achieved_goal'] = o_store['controllable_achieved_goal']
-                o2_store['achieved_goal'] = o2_store['controllable_achieved_goal']
+            o_store['achieved_goal'] = o_store[lower_achieved_state]
+            o2_store['achieved_goal'] = o2_store[lower_achieved_state]
+
             r_lower = env.compute_reward(o2_store['achieved_goal'], o2_store['desired_goal'], info = None)
             if r_lower >= 0:
                 force_replan = True # replan if we reached our lower level goal.
@@ -199,7 +197,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                   steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
                   polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=2500,
                   max_ep_len=300, save_freq=1, load=False, exp_name="Experiment_1", render=False, strategy='future',
-                  num_cpus='max', use_higher_level = True, lower_achieved_whole_state = True):
+                  num_cpus='max', use_higher_level = True, lower_achieved_state = 'achieved_goal'):
     print('Begin')
     #tf.random.set_seed(seed)
     torch.manual_seed(seed)
@@ -218,17 +216,16 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     # Little bit of short term conif
     use_higher_level = True
     replan_interval = 5
-    lower_achieved_whole_state = False
+    lower_achieved_state = 'full_positional_state'
     substitute_action = True
 
 
     # Get Env dimensions for networks
     obs_dim_higher = env.observation_space.spaces['observation'].shape[0] + env.observation_space.spaces['desired_goal'].shape[0]
     # now, our action can either be the  full state, or just the controllable aspects.
-    if lower_achieved_whole_state:
-        act_dim_higher = env.observation_space.spaces['full_positional_state'].shape[0]
-    else:
-        act_dim_higher = env.observation_space.spaces['controllable_achieved_goal'].shape[0]
+
+    act_dim_higher = env.observation_space.spaces[lower_achieved_state].shape[0]
+
 
     if use_higher_level:
         obs_dim_lower = env.observation_space.spaces['observation'].shape[0] + act_dim_higher
@@ -258,10 +255,10 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
             model.update(batch)
 
     def train(env, s_i, max_ep_len, SAC_lower, SAC_higher, summary_writer, steps_collected, exp_name, total_steps, replay_buffer_lower, replay_buffer_higher,
-              batch_size, epoch_ticker, use_higher_level, substitute_action, replan_interval, lower_achieved_whole_state):
+              batch_size, epoch_ticker, use_higher_level, substitute_action, replan_interval, lower_achieved_state):
 
         episodes = rollout_trajectories_hierarchially(n_steps=max_ep_len, env=env, start_state=s_i, max_ep_len = max_ep_len, actor_lower = SAC_lower.actor.get_stochastic_action,
-                                        actor_higher = SAC_higher.actor.get_stochastic_action, replan_interval = replan_interval,lower_achieved_whole_state = lower_achieved_whole_state,
+                                        actor_higher = SAC_higher.actor.get_stochastic_action, replan_interval = replan_interval,lower_achieved_state = lower_achieved_state,
                                         substitute_action = substitute_action, use_higher_level = use_higher_level, summary_writer = summary_writer, current_total_steps = steps_collected,
                                         exp_name = exp_name, return_episode = True, sub_goal_testing_interval = 2, sub_goal_tester = SAC_lower.actor.get_deterministic_action)
 
@@ -290,7 +287,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         episodes = rollout_trajectories_hierarchially(n_steps=start_steps, env=env, start_state=s_i, max_ep_len=max_ep_len,
                                         actor_lower='random',
                                         actor_higher=SAC_higher.actor.get_stochastic_action, replan_interval=replan_interval,
-                                        lower_achieved_whole_state=lower_achieved_whole_state,
+                                        lower_achieved_state=lower_achieved_state,
                                         substitute_action=substitute_action, use_higher_level=use_higher_level, summary_writer=summary_writer,
                                         current_total_steps=steps_collected,
                                         exp_name=exp_name, return_episode=True)
@@ -308,7 +305,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         try:
             steps_collected, epoch_ticker = train(env, s_i, max_ep_len, SAC_lower, SAC_higher, summary_writer, steps_collected, exp_name,
                                                   total_steps, replay_buffer_lower, replay_buffer_higher, batch_size, epoch_ticker, use_higher_level,
-                                                  substitute_action, replan_interval, lower_achieved_whole_state)
+                                                  substitute_action, replan_interval, lower_achieved_state)
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
             if txt == 'v':
@@ -317,7 +314,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                 rollout_trajectories_hierarchially(n_steps = max_ep_len, env = test_env, start_state = s_i, max_ep_len = max_ep_len,
                                 actor_lower = SAC_lower.actor.get_deterministic_action,
                                 actor_higher = SAC_higher.actor.get_deterministic_action, replan_interval = replan_interval,
-                                lower_achieved_whole_state = lower_achieved_whole_state,
+                                lower_achieved_state = lower_achieved_state,
                                 substitute_action = substitute_action, use_higher_level = use_higher_level, train=False, render=render, summary_writer = summary_writer,
                                 current_total_steps = steps_collected,
                                 exp_name = exp_name, return_episode = True)

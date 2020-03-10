@@ -22,14 +22,14 @@ from gym import wrappers
 # we want to create observation / action pairs of each set of obs separated by the replan interval
 # action is either the whole state, or just the controllable section depending on the flag.
 
-def sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval = 15):
+def sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval, relative):
     # first thing we need to do is sample a couple of trajectories
-    num_trajectories = 40
+    num_trajectories = 80
     traj_indexes = np.random.choice(obs.shape[0], num_trajectories)
 
     # then, in each trajectory take a random start and end
-    max_start_index = int(obs.shape[1]*0.1) # the start index can be anywhere in the first 20% of steps.
-    end_indices = np.arange(int(obs.shape[1]*0.9), obs.shape[1]) # the end indice can be anywhere in the last 20% of steps
+    max_start_index = int(obs.shape[1]*0.2) # the start index can be anywhere in the first 20% of steps.
+    end_indices = np.arange(int(obs.shape[1]*0.8), obs.shape[1]) # the end indice can be anywhere in the last 20% of steps
     traj_start_indices = np.random.choice(max_start_index, num_trajectories)
     traj_end_indices = np.random.choice(end_indices, num_trajectories)
 
@@ -46,11 +46,16 @@ def sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_int
         traj_ags = ags[traj_indexes][t]
         traj_acts = lower_level_acts[traj_indexes][t]
         replan_time_steps = np.arange(traj_start_indices[t],traj_end_indices[t],replan_interval)
+
         # we want the higher level observations to be the obs at each higher level step
         # we want the higher level action to be the achieved_goal of the corresponding next higher level step
         # thats why we take 1: onwards for one, and up to the last one for the other.
         high_obs = traj_obs[replan_time_steps[:-1]]
-        high_acts = traj_higher_level_acts[replan_time_steps[1:]]
+        if relative:
+            # take the relative higher level act from replan_time_steps ago
+            high_acts = traj_higher_level_acts[replan_time_steps[1:]] - traj_higher_level_acts[replan_time_steps[:-1]]
+        else:
+            high_acts = traj_higher_level_acts[replan_time_steps[1:]]
         # we also want the desired goal of the higher level, which is just the last ag
         goal = traj_ags[-1]
         # now tile it out so we have one for each higher level obs to later concat along the last dimension
@@ -59,13 +64,16 @@ def sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_int
         # now, the lower level. We want each lower level ob to have desired goal of the corresponding next higher level act.
         # obs is still obs.
         # act is the baseline act.
+        replan_time_steps  = replan_time_steps[1:] # take only the 1th on because we want to use the higher level acts as
+        # our lower level goals.
         # sample a lower_level obsfrom somewhere within the replan time window of each higher level step.
-        low_obs_indexes = replan_time_steps - np.random.choice(replan_interval, len(replan_time_steps))
+        # clip at 0 because otherwise we will get negative indices
+        low_obs_indexes = np.clip(replan_time_steps - np.random.choice(replan_interval, len(replan_time_steps)), 0, None)
         low_obs = traj_obs[low_obs_indexes]
-        # TODO: this should really be the replan time_steps not the last action. Why is this so hard??
+        #  should be the replan time_steps not the last action.
         # confimed - it is because of the redic velocity ma boi travels at only in the pointmass task.
         #low_goals =  traj_higher_level_acts[[-1] * len(replan_time_steps)] #np.tile(goal,[len(low_obs),1]) #
-        low_goals = traj_higher_level_acts[replan_time_steps]
+        low_goals = high_acts #traj_higher_level_acts[replan_time_steps] # surely low goals should be high acts? Actually I guess it doesn't matter
         low_acts = traj_acts[low_obs_indexes]
         low_in = np.concatenate([low_obs, low_goals], axis = -1)
 
@@ -79,52 +87,99 @@ def sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_int
     return torch.as_tensor(np.concatenate(high_in_array), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(high_out_array), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(low_in_array), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(low_out_array), dtype=torch.float32).cuda()
 
 
-def train_step(obs, ags, higher_level_acts, lower_level_acts, replan_interval, low_policy, high_policy ,high_optimizer, low_optimizer, summary_writer, steps):
+def step(obs, ags, higher_level_acts, lower_level_acts, replan_interval, relative, steps, summary_writer, low_policy, high_policy):
+    high_in, high_out, low_in, low_out = sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval, relative)
+    mu_low, _, distrib_low = low_policy(low_in)
+    mu_high, _, distrib_high = high_policy(high_in)
+    #low_loss, high_loss = ((mu_low - low_out) ** 2).mean(), ((mu_high - high_out) ** 2).mean()
+    low_loss, high_loss = -distrib_low.log_prob(low_out).mean(), -distrib_high.log_prob(high_out).mean()
+    summary_writer.add_scalar('relay_low_loss', low_loss, steps)
+    summary_writer.add_scalar('relay_high_loss', high_loss,steps)
+    return low_loss, high_loss
+
+def train_step(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, relative, low_optimizer, high_optimizer, steps, train_summary_writer, low_policy, high_policy):
     low_optimizer.zero_grad()
     high_optimizer.zero_grad()
-    high_in, high_out, low_in, low_out = sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval)
-
-    mu_low = low_policy(low_in)
-    mu_high = high_policy(high_in)
-    low_loss, high_loss = ((mu_low - low_out) ** 2).mean(), ((mu_high - high_out) ** 2).mean()
+    low_loss, high_loss = step(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, relative, steps, train_summary_writer, low_policy, high_policy)
     low_loss.backward()
     low_optimizer.step()
     high_loss.backward()
     high_optimizer.step()
     loss = low_loss + high_loss
-    summary_writer.add_scalar('relay_low_loss', low_loss, steps)
-    summary_writer.add_scalar('relay_high_loss', high_loss, steps)
-
     return loss
 
 
-def test_step(obs, ags, higher_level_acts, lower_level_acts, replan_interval, low_policy, high_policy, summary_writer, steps):
-    high_in, high_out, low_in, low_out = sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval)
-    mu_low = low_policy(low_in)
-    mu_high = high_policy(high_in)
-    low_loss, high_loss = ((mu_low - low_out) ** 2).mean(), ((mu_high - high_out) ** 2).mean()
-    summary_writer.add_scalar('relay_low_loss', low_loss, steps)
-    summary_writer.add_scalar('relay_high_loss', high_loss, steps)
-
+def test_step(valid_obs, valid_ags, valid_higher_level_acts, valid_lower_level_acts, replan_interval, low_policy, high_policy, valid_summary_writer, steps, relative):
+    low_loss, high_loss = step(valid_obs, valid_ags, valid_higher_level_acts, valid_lower_level_acts, replan_interval, relative, steps, valid_summary_writer, low_policy, high_policy)
     return low_loss, high_loss
 
+def pretrain(train_kwargs, valid_kwargs, steps):
+    train_kwargs['steps'] = steps
+    train_step(**train_kwargs)
+    if steps % 50 == 0:
+        l_low, l_high = test_step(**valid_kwargs)
+        print('Test Loss: ', steps, ' Low: ', l_low, ' High: ', l_high)
 
-def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, architecture, max_ep_len = 200):
+    steps += 1
+    return steps
+
+def train(SAC_lower, SAC_higher, replay_buffer_lower, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps_collected,
+          epoch_ticker, steps_per_epoch, batch_size):
+    # collect and store the trajectories
+    #
+    # if steps_collected < 5000:
+    #     rollout_rl_kwargs['actor_lower'] = 'random'
+    # else:
+    #     rollout_rl_kwargs['actor_lower'] = SAC_lower.actor.get_stochastic_action
+
+    rollout_rl_kwargs['current_total_steps'] = steps_collected
+    episodes = rollout_trajectories_hierarchially(**rollout_rl_kwargs)
+    [replay_buffer_lower.store_hindsight_episode(e) for e in episodes['episodes_lower']]
+
+    # take consecutive supervised and unsupervised steps.
+
+    for j in range(episodes['n_steps_lower']):
+
+
+        batch = replay_buffer_lower.sample_batch(batch_size)
+        train_kwargs['steps'] = steps_collected
+        #train_step(**train_kwargs)
+        SAC_lower.update(batch)
+        # if j % 50 == 0:
+        #     l_low, l_high = test_step(**valid_kwargs)
+        #     print('Test Loss: ', steps_collected+j, ' Low: ', l_low, ' High: ', l_high)
+    steps_collected += episodes['n_steps_lower']
+
+    if steps_collected >= epoch_ticker:
+        SAC_lower.save_weights()
+        SAC_higher.save_weights()
+        epoch_ticker += steps_per_epoch
+
+    return steps_collected, epoch_ticker
+
+
+
+
+
+def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_based, architecture, load, relative,
+                   max_ep_len = 200, replay_size=int(1e6), steps_per_epoch=10000):
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
-    replan_interval = 5
-    lower_achieved_whole_state = True
-
+    replan_interval = 20
+    lower_achieved_state = 'achieved_goal' #'controllable_achieved_goal' # 'full_positional_state' #
+    substitute_action = True
+    use_higher_level = False
     data = np.load(filepath)
     obs = data['obs']
     ags = data['achieved_goals']
-    if lower_achieved_whole_state:
-        higher_level_acts = data['full_positional_states']
-        act_dim_higher = env.observation_space.spaces['full_positional_state'].shape[0]
-    else:
-        higher_level_acts = data['controllable_achieved_goals']
-        act_dim_higher = env.observation_space.spaces['controllable_achieved_goal'].shape[0]
+
+    print('Rendering Test Rollouts')
+    test_env.render(mode='human')
+    test_env.reset()
+
+    higher_level_acts = data[lower_achieved_state+'s']
+    act_dim_higher = env.observation_space.spaces[lower_achieved_state].shape[0]
     lower_level_acts = data['acts']
 
     train_length = int(0.8 * (len(obs)))
@@ -145,51 +200,86 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
     act_limit_lower =  env.action_space.high[0]
 
     start_time = time.time()
-    train_log_dir, valid_log_dir  = 'logs/' + 'BC_train_' +exp_name+'_:' + str(start_time),  'logs/' + 'BC_valid_' +exp_name+'_:' + str(start_time)
+    train_log_dir, valid_log_dir  = 'logs/' + str(start_time) + 'BC_train_' +exp_name+'_:' ,  'logs/' + str(start_time)+ 'BC_valid_' +exp_name+'_:'
     train_summary_writer, valid_summary_writer = SummaryWriter(train_log_dir), SummaryWriter(valid_log_dir)
 
-    high_policy = MLPActor(obs_dim_higher, act_dim_higher, hidden_sizes=architecture, act_limit=act_limit_higher).cuda()
-    low_policy = MLPActor(obs_dim_lower, act_dim_lower, hidden_sizes=architecture, act_limit=act_limit_lower).cuda()
-    high_optimizer = Adam(high_policy.parameters(), lr=1e-4)
-    low_optimizer = Adam(low_policy.parameters(), lr=1e-4)
+    high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, architecture, lr=1e-4,  load=load, exp_name = 'high'+exp_name)
+    low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=1e-4, load=load, exp_name = 'low'+exp_name)
+
+    high_policy = high_model.ac.pi
+    low_policy = low_model.ac.pi
+
+
+    high_optimizer = high_model.pi_optimizer
+    low_optimizer = low_model.pi_optimizer
+
+    replay_buffer_higher = HERReplayBuffer(env, obs_dim_higher, act_dim_higher, replay_size, n_sampled_goal=4,
+                                           goal_selection_strategy='final')
+    replay_buffer_lower = HERReplayBuffer(env, obs_dim_lower, act_dim_lower, replay_size, n_sampled_goal=4,
+                                          goal_selection_strategy='final')
 
 
     print('Done Initialisation, begin training')
     steps = 0
+
+    epoch_ticker = 0
+
+    train_kwargs = {'train_obs': train_obs, 'train_ags': train_ags, 'train_higher_level_acts':train_higher_level_acts,
+                    'train_lower_level_acts': train_lower_level_acts, 'replan_interval': replan_interval, 'low_policy':low_policy,
+                    'high_policy': high_policy, 'high_optimizer':high_optimizer, 'low_optimizer':low_optimizer, 'train_summary_writer': train_summary_writer,
+                    'steps': steps, 'relative': relative, 'train_summary_writer': train_summary_writer}
+
+    valid_kwargs = {'valid_obs': valid_obs, 'valid_ags': valid_ags, 'valid_higher_level_acts': valid_higher_level_acts,
+                    'valid_lower_level_acts': valid_lower_level_acts, 'replan_interval': replan_interval,
+                     'low_policy': low_policy, 'high_policy': high_policy, 'steps': steps, 'relative': relative, 'valid_summary_writer': valid_summary_writer}
+
+    rollout_viz_kwargs = {'env': test_env, 'max_ep_len': max_ep_len,
+                'actor_lower': low_model.ac.get_deterministic_action, 'actor_higher': high_model.ac.get_deterministic_action,
+                'replan_interval': replan_interval, 'lower_achieved_state': lower_achieved_state, 'train': False,
+                'use_higher_level': use_higher_level, 'current_total_steps': steps, 'exp_name': exp_name, 'relative': relative}
+
+    rollout_rl_kwargs = {'n_steps':max_ep_len, 'env':test_env,
+                       'max_ep_len':max_ep_len, 'actor_lower':low_model.actor.get_stochastic_action,
+                    'actor_higher':high_model.actor.get_stochastic_action, 'replan_interval':replan_interval,
+                    'lower_achieved_state':lower_achieved_state, 'exp_name':exp_name,'substitute_action':substitute_action,
+                    'current_total_steps':steps, 'use_higher_level': use_higher_level, 'summary_writer':None,
+                    'return_episode':True, 'sub_goal_testing_interval':2, 'sub_goal_tester':low_model.actor.get_deterministic_action}
+
+
+
     while steps < n_steps:
         try:
-            train_step(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, low_policy, high_policy,
-                       high_optimizer, low_optimizer, train_summary_writer, steps)
+            if steps < 0:
 
-            if steps % 500 == 0:
-                l_low, l_high = test_step(valid_obs, valid_ags, valid_higher_level_acts, valid_lower_level_acts, replan_interval, low_policy,
-                                          high_policy, valid_summary_writer, steps)
-                print('Test Loss: ', steps,' Low: ', l_low, ' High: ', l_high)
+                pretrain(train_kwargs, valid_kwargs, steps)
+            else:
 
-            steps += 1
+                steps, epoch_ticker = train(low_model, high_model, replay_buffer_lower, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps,
+                      epoch_ticker, steps_per_epoch, batch_size)
+
 
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
-            if txt == 'v':
-                print('Visualising')
-                rollout_trajectories_hierarchially(n_steps=max_ep_len, env=env,
-                                                   max_ep_len=max_ep_len,
-                                                   actor_lower=low_policy.get_deterministic_action,
-                                                   actor_higher=high_policy.get_deterministic_action,
-                                                   replan_interval=replan_interval,
-                                                   lower_achieved_whole_state=lower_achieved_whole_state,
-                                                   train=False, render=True, use_higher_level = True,
-                                                   current_total_steps=steps,
-                                                   exp_name=exp_name, relative = False)
+            if txt.isnumeric():
+                rollout_viz_kwargs['n_steps'] = max_ep_len * int(txt)
+                rollout_viz_kwargs['render'] = True
+                rollout_trajectories_hierarchially(**rollout_viz_kwargs)
             print('Returning to Training.')
             if txt == 'q':
                 raise Exception
+            if txt == 's':
+                high_model.save_weights()
+                low_model.save_weights()
+
+    high_model.save_weights()
+    low_model.save_weights()
 
 
 
 # python relay_learning.py --filepath collected_data/10000HER2_pointMass-v0_Hidden_256l_2.npz
 # python relay_learning.py --filepath collected_data/20000HER2_pointMassObject-v0_Hidden_256l_2.npz --env pointMassObject-v0
 
+#python relay_learning.py --filepath  collected_data/125750HER2_pointMassObjectDuo-v0_Hidden_256l_2.npz --env pointMassObjectDuo-v0
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
@@ -201,6 +291,8 @@ if __name__ == '__main__':
     parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--goal_based', type=str2bool, default=True)
+    parser.add_argument('--load', type=str2bool, default=False)
+    parser.add_argument('--relative', type=str2bool, default=False)
 
 
     args = parser.parse_args()
@@ -208,5 +300,16 @@ if __name__ == '__main__':
         exp_name = 'relay_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
     else:
         exp_name = args.exp_name
+
+
+    # pybullet needs the GUI env to be reset first for our noncollision stuff to work.
+
+
     env = gym.make(args.env)
-    relay_learning(args.filepath, env, exp_name, args.n_steps, args.batch_size, args.goal_based, [args.hid]*args.l)
+    test_env = gym.make(args.env)
+    relay_learning(args.filepath, env, test_env, exp_name, args.n_steps, args.batch_size, args.goal_based, [args.hid]*args.l, args.load, args.relative)
+
+
+
+
+

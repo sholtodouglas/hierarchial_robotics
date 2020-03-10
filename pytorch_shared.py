@@ -83,7 +83,7 @@ class SquashedGaussianMLPActor(nn.Module):
         pi_action = torch.tanh(pi_action)
         pi_action = self.act_limit * pi_action
 
-        return pi_action, logp_pi
+        return pi_action, logp_pi, pi_distribution
 
 
 class MLPQFunction(nn.Module):
@@ -140,7 +140,7 @@ class MLPActorCritic(nn.Module):
 
     def act(self, obs, deterministic=False):
         with torch.no_grad():
-            a, _ = self.pi(obs, deterministic, False)
+            a, _ , _ = self.pi(obs, deterministic, False)
             return a.cpu().numpy()
 
     # convenience functions for passing function as a param

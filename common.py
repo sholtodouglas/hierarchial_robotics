@@ -30,7 +30,7 @@ def rollout_trajectories(n_steps, env, max_ep_len=200, actor=None, replay_buffer
                          replay_trajectory=None,
                          compare_states=None, start_state=None, goal_based=False, lstm_actor=None,
                          only_use_baseline=False,
-                         replay_obs=None, extra_info=None):
+                         replay_obs=None, extra_info=None, model = None, batch_size=None):
 
 
     # reset the environment
@@ -110,10 +110,15 @@ def rollout_trajectories(n_steps, env, max_ep_len=200, actor=None, replay_buffer
 
         # Store experience to replay buffer # dont use a replay buffer with HER, because we need to take entire episodes and do some computation so that happens after.
         if replay_buffer:
-            replay_buffer.store(o, a, r, o2, d)
+            o_store = np.concatenate([o['observation'], o['desired_goal']])
+            o2_store = np.concatenate([o2['observation'], o2['desired_goal']])
+            replay_buffer.store(o_store, a, r, o2_store, d)
+            batch = replay_buffer.sample_batch(batch_size)
+            model.update(batch)
 
         if return_episode:
                 episode.append([o, a, r, o2, d])  # add the full transition to the episode.
+
 
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
