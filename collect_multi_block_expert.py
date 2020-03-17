@@ -235,7 +235,7 @@ if __name__ == '__main__':
 	parser.add_argument('--hid', type=int, default=256)
 	parser.add_argument('--l', type=int, default=2)
 	parser.add_argument('--flatten', type=str2bool, default=False)
-	parser.add_argument('--max_ep_len', type=int, default=2000)
+	parser.add_argument('--max_ep_len', type=int, default=250)
 
 
 	args = parser.parse_args()

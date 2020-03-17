@@ -23,7 +23,7 @@ import multiprocessing as mp
 from tqdm import tqdm
 from natsort import natsorted, ns
 from PrioritizedReplayBuffer import PER
-
+from datetime import datetime
 
 #TODO Answer why reward scaling makes such a damn difference?
 
@@ -188,14 +188,14 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         #model = TD3_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'], pi_lr=lr, q_lr=lr, gamma=gamma, alpha=alpha,polyak=polyak,load=load,exp_name=exp_name,replay_buffer=replay_buffer)
     # Experience buffer
 
-    start_time = time.time()
-    train_log_dir = 'logs/' + exp_name+str(int(start_time))
+    start_time = datetime.now()
+    train_log_dir = 'logs/' + exp_name+str(start_time)
     summary_writer = SummaryWriter(train_log_dir)
 
     def update_models(model, replay_buffer, steps, batch_size):
         for j in range(steps):
             batch = replay_buffer.sample_batch(batch_size)
-            model.update(batch)
+            #model.update(batch)
 
     def train(env,s_i, max_ep_len,model, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker):
 
@@ -224,7 +224,7 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         episodes = rollout_trajectories(n_steps = start_steps,env = env, start_state=s_i,max_ep_len = max_ep_len, actor = 'random', summary_writer = summary_writer, exp_name = exp_name, return_episode = True, goal_based = True, replay_buffer = replay_buffer, model=model, batch_size=batch_size)
         steps_collected += episodes['n_steps']
         [replay_buffer.store_hindsight_episode(e) for e in episodes['episodes']]
-        #update_models(model, replay_buffer, steps = steps_collected, batch_size = batch_size)
+        update_models(model, replay_buffer, steps = steps_collected, batch_size = batch_size)
 
     # now act with our actor, and alternately collect data, then train.
     print('Done Initialisation, begin training')
@@ -263,7 +263,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    experiment_name = 'HER2_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
+    experiment_name = 'HER_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
 
     training_loop(lambda : gym.make(args.env),
       ac_kwargs=dict(hidden_sizes=[args.hid]*args.l),

@@ -105,17 +105,25 @@ class SAC_model():
 
         return loss_pi, pi_info
 
+    def polyak_target_update(self):
+        with torch.no_grad():
+            for p, p_targ in zip(self.ac.parameters(), self.ac_targ.parameters()):
+                # NB: We use an in-place operations "mul_", "add_" to update target
+                # params, as opposed to "mul" and "add", which would make new tensors.
+                p_targ.data.mul_(self.polyak)
+                p_targ.data.add_((1 - self.polyak) * p.data)
 
-    def update(self,data):
-        # First run one gradient descent step for Q1 and Q2
+    def q_update(self,data):
         self.q_optimizer.zero_grad()
         loss_q, q_info = self.compute_loss_q(data)
         loss_q.backward()
         self.q_optimizer.step()
 
+    def update(self,data):
+        # First run one gradient descent step for Q1 and Q2
+        self.q_update(data)
         # # Record things
         # logger.store(LossQ=loss_q.item(), **q_info)
-
         # Freeze Q-networks so you don't waste computational effort
         # computing gradients for them during the policy learning step.
         for p in self.q_params:
@@ -127,20 +135,30 @@ class SAC_model():
         loss_pi.backward()
         self.pi_optimizer.step()
 
-        # Unfreeze Q-networks so you can optimize it at next DDPG step.
+        # Unfreeze Q-networks so you can optimize it at next step.
         for p in self.q_params:
             p.requires_grad = True
 
-        # # Record things
-        # logger.store(LossPi=loss_pi.item(), **pi_info)
+        # Finally, update target networks by polyak averaging.
+        self.polyak_target_update()
+
+    def supervised_update(self, data, supervised_loss):
+        # First run one gradient descent step for Q1 and Q2
+        self.q_update(data)
+        for p in self.q_params:
+            p.requires_grad = False
+
+        loss_pi, pi_info = self.compute_loss_pi(data)
+        loss_pi += supervised_loss
+        loss_pi.backward()
+        self.pi_optimizer.step()
+        # Unfreeze Q-networks so you can optimize it at next step.
+        for p in self.q_params:
+            p.requires_grad = True
 
         # Finally, update target networks by polyak averaging.
-        with torch.no_grad():
-            for p, p_targ in zip(self.ac.parameters(), self.ac_targ.parameters()):
-                # NB: We use an in-place operations "mul_", "add_" to update target
-                # params, as opposed to "mul" and "add", which would make new tensors.
-                p_targ.data.mul_(self.polyak)
-                p_targ.data.add_((1 - self.polyak) * p.data)
+        self.polyak_target_update()
+
 
 
     def load_weights(self, path='saved_models/'):

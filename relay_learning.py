@@ -12,7 +12,7 @@ from hierarchy import *
 from torch.optim import Adam
 from common import *
 from gym import wrappers
-
+from datetime import datetime
 
 # ok, what do we want to do?
 # Q1 - DO we want to learn from one long thing, or multiple demos?
@@ -91,8 +91,8 @@ def step(obs, ags, higher_level_acts, lower_level_acts, replan_interval, relativ
     high_in, high_out, low_in, low_out = sample_relay_batch(obs, ags, higher_level_acts, lower_level_acts, replan_interval, relative)
     mu_low, _, distrib_low = low_policy(low_in)
     mu_high, _, distrib_high = high_policy(high_in)
-    #low_loss, high_loss = ((mu_low - low_out) ** 2).mean(), ((mu_high - high_out) ** 2).mean()
-    low_loss, high_loss = -distrib_low.log_prob(low_out).mean(), -distrib_high.log_prob(high_out).mean()
+    low_loss, high_loss = ((mu_low - low_out) ** 2).mean(), ((mu_high - high_out) ** 2).mean()
+    #low_loss, high_loss = -distrib_low.log_prob(low_out).mean(), -distrib_high.log_prob(high_out).mean()
     summary_writer.add_scalar('relay_low_loss', low_loss, steps)
     summary_writer.add_scalar('relay_high_loss', high_loss,steps)
     return low_loss, high_loss
@@ -102,11 +102,22 @@ def train_step(train_obs, train_ags, train_higher_level_acts, train_lower_level_
     high_optimizer.zero_grad()
     low_loss, high_loss = step(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, relative, steps, train_summary_writer, low_policy, high_policy)
     low_loss.backward()
-    low_optimizer.step()
+    low_optimizer.step() #TODO -----------
     high_loss.backward()
     high_optimizer.step()
     loss = low_loss + high_loss
     return loss
+
+def find_lower_loss(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, relative, low_optimizer, high_optimizer, steps, train_summary_writer, low_policy, high_policy):
+    low_optimizer.zero_grad()
+    high_optimizer.zero_grad()
+    low_loss, high_loss = step(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval,
+                               relative, steps, train_summary_writer, low_policy, high_policy)
+    high_loss.backward()
+    high_optimizer.step()
+    # don't step the low optimizer, keep the loss for the RL model
+    return low_loss
+
 
 
 def test_step(valid_obs, valid_ags, valid_higher_level_acts, valid_lower_level_acts, replan_interval, low_policy, high_policy, valid_summary_writer, steps, relative):
@@ -117,6 +128,7 @@ def pretrain(train_kwargs, valid_kwargs, steps):
     train_kwargs['steps'] = steps
     train_step(**train_kwargs)
     if steps % 50 == 0:
+        valid_kwargs['steps'] = steps
         l_low, l_high = test_step(**valid_kwargs)
         print('Test Loss: ', steps, ' Low: ', l_low, ' High: ', l_high)
 
@@ -143,15 +155,17 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, rollout_rl_kwargs, train_k
 
         batch = replay_buffer_lower.sample_batch(batch_size)
         train_kwargs['steps'] = steps_collected
-        #train_step(**train_kwargs)
+        low_loss = find_lower_loss(**train_kwargs) #TODO -----------
+        SAC_lower.supervised_update(batch, low_loss)
         SAC_lower.update(batch)
-        # if j % 50 == 0:
-        #     l_low, l_high = test_step(**valid_kwargs)
-        #     print('Test Loss: ', steps_collected+j, ' Low: ', l_low, ' High: ', l_high)
+        if j % 50 == 0:
+            valid_kwargs['steps'] =  steps_collected+j
+            l_low, l_high = test_step(**valid_kwargs)
+            print('Test Loss: ', steps_collected+j, ' Low: ', l_low, ' High: ', l_high)
     steps_collected += episodes['n_steps_lower']
 
     if steps_collected >= epoch_ticker:
-        SAC_lower.save_weights()
+        #SAC_lower.save_weights()
         SAC_higher.save_weights()
         epoch_ticker += steps_per_epoch
 
@@ -166,10 +180,10 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
-    replan_interval = 20
+    replan_interval = 50
     lower_achieved_state = 'achieved_goal' #'controllable_achieved_goal' # 'full_positional_state' #
     substitute_action = True
-    use_higher_level = False
+    use_higher_level = True
     data = np.load(filepath)
     obs = data['obs']
     ags = data['achieved_goals']
@@ -199,13 +213,14 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
     act_limit_higher = env.ENVIRONMENT_BOUNDS
     act_limit_lower =  env.action_space.high[0]
 
-    start_time = time.time()
+    start_time = datetime.now()
     train_log_dir, valid_log_dir  = 'logs/' + str(start_time) + 'BC_train_' +exp_name+'_:' ,  'logs/' + str(start_time)+ 'BC_valid_' +exp_name+'_:'
     train_summary_writer, valid_summary_writer = SummaryWriter(train_log_dir), SummaryWriter(valid_log_dir)
 
     high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, architecture, lr=1e-4,  load=load, exp_name = 'high'+exp_name)
+    #low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=1e-4, load=load, exp_name=exp_name.replace('relay', 'HER2'))
     low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=1e-4, load=load, exp_name = 'low'+exp_name)
-
+    #TODO -----------
     high_policy = high_model.ac.pi
     low_policy = low_model.ac.pi
 
@@ -238,20 +253,20 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
                 'replan_interval': replan_interval, 'lower_achieved_state': lower_achieved_state, 'train': False,
                 'use_higher_level': use_higher_level, 'current_total_steps': steps, 'exp_name': exp_name, 'relative': relative}
 
-    rollout_rl_kwargs = {'n_steps':max_ep_len, 'env':test_env,
+    rollout_rl_kwargs = {'n_steps':max_ep_len, 'env':env,
                        'max_ep_len':max_ep_len, 'actor_lower':low_model.actor.get_stochastic_action,
                     'actor_higher':high_model.actor.get_stochastic_action, 'replan_interval':replan_interval,
                     'lower_achieved_state':lower_achieved_state, 'exp_name':exp_name,'substitute_action':substitute_action,
                     'current_total_steps':steps, 'use_higher_level': use_higher_level, 'summary_writer':None,
-                    'return_episode':True, 'sub_goal_testing_interval':2, 'sub_goal_tester':low_model.actor.get_deterministic_action}
+                    'return_episode':True, 'sub_goal_testing_interval':2, 'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower, 'replay_buffer_high': replay_buffer_higher}
 
 
 
     while steps < n_steps:
         try:
-            if steps < 0:
+            if steps < 10000:
 
-                pretrain(train_kwargs, valid_kwargs, steps)
+                steps =  pretrain(train_kwargs, valid_kwargs, steps)
             else:
 
                 steps, epoch_ticker = train(low_model, high_model, replay_buffer_lower, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps,
@@ -286,7 +301,7 @@ if __name__ == '__main__':
     parser.add_argument('--filepath', type=str, default="")
     parser.add_argument('--env', type=str, default='pointMass-v0')
     parser.add_argument('--exp_name', type=str, default=None)
-    parser.add_argument('--n_steps', type=int, default=50000)
+    parser.add_argument('--n_steps', type=int, default=100000)
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
@@ -313,3 +328,4 @@ if __name__ == '__main__':
 
 
 
+# TODO - Implement the train as you go, and train for 500k and see where it gets to. Make sure each subgoal is a separate episode?
