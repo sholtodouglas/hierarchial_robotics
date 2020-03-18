@@ -35,7 +35,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                          compare_states=None, start_state=None, lstm_actor=None,
                          only_use_baseline=False,
                          replay_obs=None, extra_info=None, sub_goal_testing_interval = 2, sub_goal_tester = None,
-                        relative =False, replay_buffer_low = None, replay_buffer_high = None, model_low = None, model_high= None, batch_size=None, supervised_kwargs = None, supervised_func = None):
+                        relative =False, replay_buffer_low = None, replay_buffer_high = None, model_low = None, model_high= None, batch_size=None, supervised_kwargs = None, supervised_func_low= None, supervised_func_high=None):
 
 
     # reset the environment
@@ -88,7 +88,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
         if t % replan_interval == 0 or force_replan is True:
             if t > 0: # this is the second time we have entered this, so we can begin storing transitions
-                if substitute_action:
+                if substitute_action and higher_level_steps % sub_goal_testing_interval != 0: # need to make sure sub-goal tests get the correct action negatively punished.
 
                     current_state =  o2[lower_achieved_state]
                     old_state =  higher_o1[lower_achieved_state]
@@ -113,7 +113,12 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                         o2_buff_high = np.concatenate([o2['observation'], o2['desired_goal']])
                         replay_buffer_high.store(o_buff_high, action, r, o2_buff_high, d)
                         batch = replay_buffer_high.sample_batch(batch_size)
-                        model_high.update(batch)
+                        if supervised_func_high:
+                            # if we have a function which provides a supervised loss term, use it.
+                            high_loss = supervised_func_high(**supervised_kwargs)
+                            model_high.supervised_update(batch, high_loss)
+                        else:
+                            model_high.update(batch)
                 higher_level_steps += 1
 
 
@@ -182,7 +187,13 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                 o2_buff_low = np.concatenate([o2_store['observation'], o2_store['desired_goal']])
                 replay_buffer_low.store(o_buff_low, a, r, o2_buff_low, d)
                 batch = replay_buffer_low.sample_batch(batch_size)
-                model_low.update(batch)
+                if supervised_func_low:
+                    # if we have a function which provides a supervised loss term, use it.
+                    low_loss = supervised_func_low(**supervised_kwargs)
+                    model_low.supervised_update(batch, low_loss)
+                else:
+                    model_low.update(batch)
+
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
 
@@ -239,7 +250,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
 
     # Little bit of short term conif
     use_higher_level = True
-    replan_interval = 10
+    replan_interval = 5
     lower_achieved_state =  'controllable_achieved_goal' # 'achieved_goal' #   'full_positional_state'
     substitute_action = True
     relative = False
@@ -260,7 +271,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
 
     # higher level model
     act_limit_higher = env.ENVIRONMENT_BOUNDS
-    SAC_higher = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_higher')
+    SAC_higher = SAC_model(act_limit_higher, obs_dim_yes_sub_goal_testing_action_sub_mod5higher, act_dim_higher, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_higher')
     act_limit_lower = env.action_space.high[0]
     SAC_lower = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_lower')
     # Experience buffer
@@ -381,7 +392,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    experiment_name = 'hierarchial2_horizon_10_' + args.env + '_Hidden_' + str(args.hid) + 'l_' + str(args.l)
+    experiment_name = 'yes_sub_goal_testing_action_sub_mod5_correct_timing_withsubgoaltest' + args.env
 
     training_loop(lambda: gym.make(args.env),
                   ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),

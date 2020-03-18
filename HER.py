@@ -59,7 +59,7 @@ class HERReplayBuffer:
         self.env = env
         self.goal_selection_strategy = goal_selection_strategy
         self.ptr, self.size, self.max_size = 0, 0, size
-        self.PER = PER(size)
+        #self.PER = PER(size)
 
     def store(self, obs, act, rew, next_obs, done):
         self.obs1_buf[self.ptr] = obs
@@ -67,15 +67,15 @@ class HERReplayBuffer:
         self.acts_buf[self.ptr] = act
         self.rews_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
-        self.PER.store(self.ptr) # store the index in the PER tree
+        #self.PER.store(self.ptr) # store the index in the PER tree
         self.ptr = (self.ptr+1) % self.max_size
         self.size = min(self.size+1, self.max_size)
 
 
     def sample_batch(self, batch_size=32):
 
-        #idxs = np.random.randint(0, self.size, size=batch_size)
-        tree_idxs, idxs = self.PER.sample(batch_size)
+        idxs = np.random.randint(0, self.size, size=batch_size)
+        #tree_idxs, idxs = self.PER.sample(batch_size)
         batch =  dict(obs=self.obs1_buf[idxs],
                     obs2=self.obs2_buf[idxs],
                     act=self.acts_buf[idxs],
@@ -85,11 +85,11 @@ class HERReplayBuffer:
             pass
         else:
             batch =  {k: torch.as_tensor(v, dtype=torch.float32).cuda() for k, v in batch.items()}
-        batch['PER_tree_idxs'] = tree_idxs
+        #batch['PER_tree_idxs'] = tree_idxs
         return batch
 
-    def update_priorities(self, tree_idxs, TD_errors):
-        self.PER.batch_update(tree_idxs, TD_errors)
+    # def update_priorities(self, tree_idxs, TD_errors):
+    #     self.PER.batch_update(tree_idxs, TD_errors)
 
         # could be a goal, or both goal and z!
     def sample_achieved(self, transitions, transition_idx, strategy = 'future', encoder = None):

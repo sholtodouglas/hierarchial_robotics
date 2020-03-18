@@ -108,15 +108,23 @@ def train_step(train_obs, train_ags, train_higher_level_acts, train_lower_level_
     loss = low_loss + high_loss
     return loss
 
-def find_lower_loss(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, relative, low_optimizer, high_optimizer, steps, train_summary_writer, low_policy, high_policy):
+def find_supervised_loss_low(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, relative, low_optimizer, high_optimizer, steps, train_summary_writer, low_policy, high_policy):
     low_optimizer.zero_grad()
-    high_optimizer.zero_grad()
-    low_loss, high_loss = step(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval,
-                               relative, steps, train_summary_writer, low_policy, high_policy)
-    high_loss.backward()
-    high_optimizer.step()
-    # don't step the low optimizer, keep the loss for the RL model
+    high_in, high_out, low_in, low_out = sample_relay_batch(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts,
+                                                            replan_interval, relative)
+    mu_low, _, distrib_low = low_policy(low_in)
+    low_loss = ((mu_low - low_out) ** 2).mean()
+    train_summary_writer.add_scalar('relay_low_loss', low_loss, steps)
     return low_loss
+
+def find_supervised_loss_high(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts, replan_interval, relative, low_optimizer, high_optimizer, steps, train_summary_writer, low_policy, high_policy):
+    high_optimizer.zero_grad()
+    high_in, high_out, low_in, low_out = sample_relay_batch(train_obs, train_ags, train_higher_level_acts, train_lower_level_acts,
+                                                            replan_interval, relative)
+    mu_high, _, distrib_high = high_policy(high_in)
+    high_loss = ((mu_high - high_out) ** 2).mean()
+    train_summary_writer.add_scalar('relay_high_loss', high_loss, steps)
+    return high_loss
 
 
 
@@ -135,7 +143,7 @@ def pretrain(train_kwargs, valid_kwargs, steps):
     steps += 1
     return steps
 
-def train(SAC_lower, SAC_higher, replay_buffer_lower, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps_collected,
+def train(SAC_lower, SAC_higher, replay_buffer_lower, replay_buffer_higher, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps_collected,
           epoch_ticker, steps_per_epoch, batch_size):
     # collect and store the trajectories
     #
@@ -147,25 +155,18 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, rollout_rl_kwargs, train_k
     rollout_rl_kwargs['current_total_steps'] = steps_collected
     episodes = rollout_trajectories_hierarchially(**rollout_rl_kwargs)
     [replay_buffer_lower.store_hindsight_episode(e) for e in episodes['episodes_lower']]
+    [replay_buffer_higher.store_hindsight_episode(e) for e in episodes['episodes_higher']]
 
     # take consecutive supervised and unsupervised steps.
 
-    for j in range(episodes['n_steps_lower']):
-
-
-        batch = replay_buffer_lower.sample_batch(batch_size)
-        train_kwargs['steps'] = steps_collected
-        low_loss = find_lower_loss(**train_kwargs) #TODO -----------
-        SAC_lower.supervised_update(batch, low_loss)
-        SAC_lower.update(batch)
-        if j % 50 == 0:
-            valid_kwargs['steps'] =  steps_collected+j
-            l_low, l_high = test_step(**valid_kwargs)
-            print('Test Loss: ', steps_collected+j, ' Low: ', l_low, ' High: ', l_high)
+    for j in range(episodes['n_steps_lower']//50):
+        valid_kwargs['steps'] =  steps_collected+j
+        l_low, l_high = test_step(**valid_kwargs)
+        print('Test Loss: ', steps_collected+j, ' Low: ', l_low, ' High: ', l_high)
     steps_collected += episodes['n_steps_lower']
 
     if steps_collected >= epoch_ticker:
-        #SAC_lower.save_weights()
+        SAC_lower.save_weights()
         SAC_higher.save_weights()
         epoch_ticker += steps_per_epoch
 
@@ -176,14 +177,15 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, rollout_rl_kwargs, train_k
 
 
 def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_based, architecture, load, relative,
-                   max_ep_len = 200, replay_size=int(1e6), steps_per_epoch=10000):
+                   max_ep_len = 100, replay_size=int(1e6), steps_per_epoch=10000):
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
-    replan_interval = 50
-    lower_achieved_state = 'achieved_goal' #'controllable_achieved_goal' # 'full_positional_state' #
+    replan_interval = 10
+    lower_achieved_state = 'controllable_achieved_goal' #'achieved_goal' # 'full_positional_state' #
     substitute_action = True
     use_higher_level = True
+    use_supervision_with_RL = True
     data = np.load(filepath)
     obs = data['obs']
     ags = data['achieved_goals']
@@ -244,6 +246,7 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
                     'high_policy': high_policy, 'high_optimizer':high_optimizer, 'low_optimizer':low_optimizer, 'train_summary_writer': train_summary_writer,
                     'steps': steps, 'relative': relative, 'train_summary_writer': train_summary_writer}
 
+
     valid_kwargs = {'valid_obs': valid_obs, 'valid_ags': valid_ags, 'valid_higher_level_acts': valid_higher_level_acts,
                     'valid_lower_level_acts': valid_lower_level_acts, 'replan_interval': replan_interval,
                      'low_policy': low_policy, 'high_policy': high_policy, 'steps': steps, 'relative': relative, 'valid_summary_writer': valid_summary_writer}
@@ -253,23 +256,31 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
                 'replan_interval': replan_interval, 'lower_achieved_state': lower_achieved_state, 'train': False,
                 'use_higher_level': use_higher_level, 'current_total_steps': steps, 'exp_name': exp_name, 'relative': relative}
 
+    if use_supervision_with_RL:
+        supervised_kwargs, supervised_func_low, supervised_func_high = train_kwargs, find_supervised_loss_low, find_supervised_loss_high
+    else:
+        supervised_kwargs, supervised_func_low, supervised_func_high = None, None, None
+
     rollout_rl_kwargs = {'n_steps':max_ep_len, 'env':env,
                        'max_ep_len':max_ep_len, 'actor_lower':low_model.actor.get_stochastic_action,
                     'actor_higher':high_model.actor.get_stochastic_action, 'replan_interval':replan_interval,
                     'lower_achieved_state':lower_achieved_state, 'exp_name':exp_name,'substitute_action':substitute_action,
                     'current_total_steps':steps, 'use_higher_level': use_higher_level, 'summary_writer':None,
-                    'return_episode':True, 'sub_goal_testing_interval':2, 'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower, 'replay_buffer_high': replay_buffer_higher}
+                    'return_episode':True, 'sub_goal_testing_interval':3, 'relative': relative,
+                    'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower,
+                    'replay_buffer_high': replay_buffer_higher, 'model_low':low_model, 'model_high':high_model, 'batch_size':batch_size,
+                    'supervised_kwargs':supervised_kwargs, 'supervised_func_low': supervised_func_low, 'supervised_func_high': supervised_func_high}
 
 
 
     while steps < n_steps:
         try:
-            if steps < 10000:
+            if steps < 500:
 
                 steps =  pretrain(train_kwargs, valid_kwargs, steps)
             else:
 
-                steps, epoch_ticker = train(low_model, high_model, replay_buffer_lower, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps,
+                steps, epoch_ticker = train(low_model, high_model, replay_buffer_lower, replay_buffer_higher, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps,
                       epoch_ticker, steps_per_epoch, batch_size)
 
 
