@@ -24,6 +24,10 @@ from tqdm import tqdm
 from natsort import natsorted, ns
 from datetime import datetime
 
+
+
+
+
 # lower achieved_whole_state is whether to use the full state
 # substitute action is whether to swap out the action commanded by the higher level network for the actual achieved state of the lower level one. Following the openai RFR and Levy's paper.
 # use_higher_level is whether to actually use the higher level net or just use the lower one.  (use this mostly for testing).
@@ -88,7 +92,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
         if t % replan_interval == 0 or force_replan is True:
             if t > 0: # this is the second time we have entered this, so we can begin storing transitions
-                if substitute_action and higher_level_steps % sub_goal_testing_interval != 0: # need to make sure sub-goal tests get the correct action negatively punished.
+                if substitute_action:
 
                     current_state =  o2[lower_achieved_state]
                     old_state =  higher_o1[lower_achieved_state]
@@ -103,7 +107,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                     if sub_goal_tester and higher_level_steps % sub_goal_testing_interval == 0: # this round we are testing sub_goals.
                         if r_lower < 0: # i.e, lower level failed to reach
                             r = -replan_interval # severely punish setting unreachable sub goals.
-                    episode_higher.append([higher_o1, action,r,o2, d])
+
+                    episode_higher.append([higher_o1, action, r, o2, d])  # this r will be subsitiuted in the hindsight process, and thus the action should always be that which assumes the lower level is optimal.
                     # cut off the short term episode here.
                     episode_buffer_lower.append(episode_lower)  # Can't believe I forgot this part.
                     episode_lower = []
@@ -111,14 +116,25 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                     if replay_buffer_high:
                         o_buff_high = np.concatenate([higher_o1['observation'], higher_o1['desired_goal']]) # TODO CONFIRM CORRECTNESS
                         o2_buff_high = np.concatenate([o2['observation'], o2['desired_goal']])
-                        replay_buffer_high.store(o_buff_high, action, r, o2_buff_high, d)
+                        # if higher_level_steps % 5 == 0:
+                        #     action = sub_goal # sometimes keep the originally given action.
+                        replay_buffer_high.store(o_buff_high, action, r, o2_buff_high, d) # this r will be the one that is potentially subgoal tested.
+
                         batch = replay_buffer_high.sample_batch(batch_size)
+                        # for some reason subbing the correct action when subgoal testing (subgoal in this case)
+                        # performs worse, why? Maybe the subbed acheived actions give tighter bounds, e.g if told to go to
+                        # the corner, fail to do so, get a big neg reward, then sub the achieved goal of only getting halfway there
+                        # thats still bad, and a tighter bound on the action space?
+
                         if supervised_func_high:
                             # if we have a function which provides a supervised loss term, use it.
                             high_loss = supervised_func_high(**supervised_kwargs)
                             model_high.supervised_update(batch, high_loss)
                         else:
                             model_high.update(batch)
+
+
+
                 higher_level_steps += 1
 
 
@@ -231,7 +247,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                   steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
                   polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=2500,
-                  max_ep_len=300, save_freq=1, load=False, exp_name="Experiment_1", render=False, strategy='future',
+                  max_ep_len=200, save_freq=1, load=False, exp_name="Experiment_1", render=False, strategy='future',
                   num_cpus='max', use_higher_level = True, lower_achieved_state = 'achieved_goal'):
     print('Begin')
     #tf.random.set_seed(seed)
@@ -251,7 +267,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     # Little bit of short term conif
     use_higher_level = True
     replan_interval = 5
-    lower_achieved_state =  'controllable_achieved_goal' # 'achieved_goal' #   'full_positional_state'
+    lower_achieved_state ='controllable_achieved_goal' # 'achieved_goal' #  'full_positional_state' #
     substitute_action = True
     relative = False
 
@@ -271,7 +287,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
 
     # higher level model
     act_limit_higher = env.ENVIRONMENT_BOUNDS
-    SAC_higher = SAC_model(act_limit_higher, obs_dim_yes_sub_goal_testing_action_sub_mod5higher, act_dim_higher, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_higher')
+    SAC_higher = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_higher')
     act_limit_lower = env.action_space.high[0]
     SAC_lower = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_lower')
     # Experience buffer
@@ -377,7 +393,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default='pointMass-v0')
-    parser.add_argument('--hid', type=int, default=256)
+    parser.add_argument('--hid', type=int, default=64)
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
@@ -392,7 +408,13 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    experiment_name = 'yes_sub_goal_testing_action_sub_mod5_correct_timing_withsubgoaltest' + args.env
+    experiment_name = 'test_arch64' + args.env
+
+    # save the current file
+    with open(__file__, 'r') as f:
+        with open('logs/snapshots/'+experiment_name+str(datetime.now())+'.py', 'w') as out:
+            for line in (f.readlines()):  # remove last 7 lines
+                print(line, end='', file=out)
 
     training_loop(lambda: gym.make(args.env),
                   ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),

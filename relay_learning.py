@@ -162,12 +162,12 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, replay_buffer_higher, roll
     for j in range(episodes['n_steps_lower']//50):
         valid_kwargs['steps'] =  steps_collected+j
         l_low, l_high = test_step(**valid_kwargs)
-        print('Test Loss: ', steps_collected+j, ' Low: ', l_low, ' High: ', l_high)
+        print('Test Loss: ', steps_collected+j, ' Low: ', l_low.detach().cpu().numpy(), ' High: ', l_high.detach().cpu().numpy())
     steps_collected += episodes['n_steps_lower']
 
     if steps_collected >= epoch_ticker:
-        SAC_lower.save_weights()
-        SAC_higher.save_weights()
+        # SAC_lower.save_weights()
+        # SAC_higher.save_weights()
         epoch_ticker += steps_per_epoch
 
     return steps_collected, epoch_ticker
@@ -176,12 +176,15 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, replay_buffer_higher, roll
 
 
 
-def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_based, architecture, load, relative,
-                   max_ep_len = 100, replay_size=int(1e6), steps_per_epoch=10000):
+def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, batch_size =100, load=False, relative=False,
+                   play=False, max_ep_len = 200, replay_size=int(1e6), steps_per_epoch=10000, lr=1e-3, seed=0):
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
-    replan_interval = 10
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    replan_interval = 5
     lower_achieved_state = 'controllable_achieved_goal' #'achieved_goal' # 'full_positional_state' #
     substitute_action = True
     use_higher_level = True
@@ -195,7 +198,7 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
     test_env.reset()
 
     higher_level_acts = data[lower_achieved_state+'s']
-    act_dim_higher = env.observation_space.spaces[lower_achieved_state].shape[0]
+
     lower_level_acts = data['acts']
 
     train_length = int(0.8 * (len(obs)))
@@ -206,6 +209,7 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
 
 
     # Get Env dimensions for networks
+    act_dim_higher = env.observation_space.spaces[lower_achieved_state].shape[0]
     obs_dim_higher = env.observation_space.spaces['observation'].shape[0] + \
                      env.observation_space.spaces['desired_goal'].shape[0]
     obs_dim_lower = env.observation_space.spaces['observation'].shape[0] + act_dim_higher
@@ -219,9 +223,9 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
     train_log_dir, valid_log_dir  = 'logs/' + str(start_time) + 'BC_train_' +exp_name+'_:' ,  'logs/' + str(start_time)+ 'BC_valid_' +exp_name+'_:'
     train_summary_writer, valid_summary_writer = SummaryWriter(train_log_dir), SummaryWriter(valid_log_dir)
 
-    high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, architecture, lr=1e-4,  load=load, exp_name = 'high'+exp_name)
-    #low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=1e-4, load=load, exp_name=exp_name.replace('relay', 'HER2'))
-    low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=1e-4, load=load, exp_name = 'low'+exp_name)
+    high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, architecture, lr=lr,  load=load, exp_name = 'high'+exp_name)
+    #low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=lr, load=load, exp_name=exp_name.replace('relay', 'HER2'))
+    low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=lr, load=load, exp_name = 'low'+exp_name)
     #TODO -----------
     high_policy = high_model.ac.pi
     low_policy = low_model.ac.pi
@@ -265,17 +269,23 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, batch_size, goal_
                        'max_ep_len':max_ep_len, 'actor_lower':low_model.actor.get_stochastic_action,
                     'actor_higher':high_model.actor.get_stochastic_action, 'replan_interval':replan_interval,
                     'lower_achieved_state':lower_achieved_state, 'exp_name':exp_name,'substitute_action':substitute_action,
-                    'current_total_steps':steps, 'use_higher_level': use_higher_level, 'summary_writer':None,
+                    'current_total_steps':steps, 'use_higher_level': use_higher_level, 'summary_writer':train_summary_writer,
                     'return_episode':True, 'sub_goal_testing_interval':3, 'relative': relative,
                     'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower,
                     'replay_buffer_high': replay_buffer_higher, 'model_low':low_model, 'model_high':high_model, 'batch_size':batch_size,
                     'supervised_kwargs':supervised_kwargs, 'supervised_func_low': supervised_func_low, 'supervised_func_high': supervised_func_high}
 
 
+    if play:
+        while(1):
+            rollout_viz_kwargs['n_steps'] = max_ep_len
+            rollout_viz_kwargs['render'] = True
+            rollout_trajectories_hierarchially(**rollout_viz_kwargs)
+
 
     while steps < n_steps:
         try:
-            if steps < 500:
+            if steps < 5000 and not load:
 
                 steps =  pretrain(train_kwargs, valid_kwargs, steps)
             else:
@@ -312,13 +322,13 @@ if __name__ == '__main__':
     parser.add_argument('--filepath', type=str, default="")
     parser.add_argument('--env', type=str, default='pointMass-v0')
     parser.add_argument('--exp_name', type=str, default=None)
-    parser.add_argument('--n_steps', type=int, default=100000)
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--n_steps', type=int, default=300000)
+    parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
-    parser.add_argument('--goal_based', type=str2bool, default=True)
     parser.add_argument('--load', type=str2bool, default=False)
     parser.add_argument('--relative', type=str2bool, default=False)
+    parser.add_argument('--play', type= str2bool, default=False)
 
 
     args = parser.parse_args()
@@ -333,9 +343,8 @@ if __name__ == '__main__':
 
     env = gym.make(args.env)
     test_env = gym.make(args.env)
-    relay_learning(args.filepath, env, test_env, exp_name, args.n_steps, args.batch_size, args.goal_based, [args.hid]*args.l, args.load, args.relative)
-
-
+    relay_learning(args.filepath, env, test_env, exp_name, args.n_steps, [args.hid]*args.l,args.batch_size,
+                   load =  args.load, relative = args.relative,play= args.play)
 
 
 

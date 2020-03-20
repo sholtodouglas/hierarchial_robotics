@@ -192,10 +192,7 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     train_log_dir = 'logs/' + exp_name+str(start_time)
     summary_writer = SummaryWriter(train_log_dir)
 
-    def update_models(model, replay_buffer, steps, batch_size):
-        for j in range(steps):
-            batch = replay_buffer.sample_batch(batch_size)
-            #model.update(batch)
+
 
     def train(env,s_i, max_ep_len,model, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker):
 
@@ -268,3 +265,10 @@ if __name__ == '__main__':
     training_loop(lambda : gym.make(args.env),
       ac_kwargs=dict(hidden_sizes=[args.hid]*args.l),
       gamma=args.gamma, seed=args.seed, epochs=args.epochs, load = args.load, exp_name = experiment_name, max_ep_len = args.max_ep_len, render = True, strategy = args.strategy)
+
+
+
+# def update_models(model, replay_buffer, steps, batch_size):
+#     for j in range(steps):
+#         batch = replay_buffer.sample_batch(batch_size)
+#         #model.update(batch)
