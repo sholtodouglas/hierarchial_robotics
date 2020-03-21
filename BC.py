@@ -134,6 +134,8 @@ if __name__ == '__main__':
         exp_name = 'BC_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
     else:
         exp_name = args.exp_name
+    save_file(__file__, exp_name, args)
+
     env = gym.make(args.env)
     behavioural_clone(args.filepath, env, exp_name, args.n_steps, args.batch_size, args.goal_based, [args.hid]*args.l, load = args.load)
 

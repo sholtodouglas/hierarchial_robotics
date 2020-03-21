@@ -153,8 +153,8 @@ class HERReplayBuffer:
 # This is our training loop.
 def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=0,
-        max_ep_len=300, save_freq=1, load = False, exp_name = "Experiment_1", render = False, strategy = 'future', num_cpus = 'max'):
+        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=1000,
+        max_ep_len=300, load = False, exp_name = "Experiment_1", render = False, strategy = 'future', num_cpus = 'max'):
 
     print('Begin')
 
@@ -180,12 +180,9 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     act_dim = env.action_space.shape[0]
     act_limit = env.action_space.high[0]
     replay_buffer = HERReplayBuffer(env, obs_dim, act_dim, replay_size, n_sampled_goal = 4, goal_selection_strategy = strategy)
-    #Logging
-    if TF:
-        model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name)
-    else:
-        model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name, replay_buffer=replay_buffer)
-        #model = TD3_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'], pi_lr=lr, q_lr=lr, gamma=gamma, alpha=alpha,polyak=polyak,load=load,exp_name=exp_name,replay_buffer=replay_buffer)
+
+    model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name, replay_buffer=replay_buffer)
+    #model = TD3_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'], pi_lr=lr, q_lr=lr, gamma=gamma, alpha=alpha,polyak=polyak,load=load,exp_name=exp_name,replay_buffer=replay_buffer)
     # Experience buffer
 
     start_time = datetime.now()
@@ -194,12 +191,11 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
 
 
 
-    def train(env,s_i, max_ep_len,model, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker):
+    def train(rollout_kwargs, steps_collected, epoch_ticker):
 
-        episodes = rollout_trajectories(n_steps = max_ep_len,env = env,start_state=s_i, max_ep_len = max_ep_len, actor = model.actor.get_stochastic_action, summary_writer=summary_writer, current_total_steps = steps_collected, exp_name = exp_name, return_episode = True, goal_based = True, replay_buffer=replay_buffer, model = model, batch_size=batch_size)
+        episodes = rollout_trajectories(**rollout_kwargs)
         steps_collected += episodes['n_steps']
         [replay_buffer.store_hindsight_episode(e) for e in episodes['episodes']]
-        #update_models(model, replay_buffer, steps = max_ep_len, batch_size = batch_size)
         if steps_collected >= epoch_ticker:
             model.save_weights()
             epoch_ticker += steps_per_epoch
@@ -211,31 +207,36 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     steps_collected = 0
     epoch_ticker = 0
 
-    s_i, s_g = None, None
-
+    rollout_rl_kwargs = {'n_steps': max_ep_len, 'env' : env, 'max_ep_len' : max_ep_len, 'actor' : model.actor.get_stochastic_action,
+                         'summary_writer' : summary_writer, 'exp_name' : exp_name, 'return_episode' : True, 'goal_based' : True,
+                         'replay_buffer' : replay_buffer, 'model':model, 'batch_size': batch_size, 'current_total_steps':steps_collected}
     
+    rollout_random_kwargs = rollout_rl_kwargs.copy()
+    rollout_random_kwargs['actor'] = 'random'
+    rollout_random_kwargs['n_steps'] = start_steps
+
+    rollout_viz_kwargs = rollout_rl_kwargs.copy()
+    rollout_viz_kwargs['env'] = test_env
+    rollout_viz_kwargs['train'] = False
+    rollout_viz_kwargs['render'] = render
+    rollout_viz_kwargs['replay_buffer'] = None
+    rollout_viz_kwargs['actor'] = model.actor.get_deterministic_action
 
     if not load:
     # collect some initial random steps to initialise
-
-        episodes = rollout_trajectories(n_steps = start_steps,env = env, start_state=s_i,max_ep_len = max_ep_len, actor = 'random', summary_writer = summary_writer, exp_name = exp_name, return_episode = True, goal_based = True, replay_buffer = replay_buffer, model=model, batch_size=batch_size)
-        steps_collected += episodes['n_steps']
-        [replay_buffer.store_hindsight_episode(e) for e in episodes['episodes']]
-        update_models(model, replay_buffer, steps = steps_collected, batch_size = batch_size)
-
-    # now act with our actor, and alternately collect data, then train.
-    print('Done Initialisation, begin training')
+        steps_collected, epoch_ticker = train(rollout_random_kwargs, steps_collected, epoch_ticker)
 
     while steps_collected < total_steps:
         try:
-
-            steps_collected, epoch_ticker = train(env,s_i, max_ep_len,model, summary_writer, steps_collected, exp_name, total_steps, replay_buffer, batch_size, epoch_ticker)
+            rollout_rl_kwargs['current_total_steps'] = steps_collected
+            steps_collected, epoch_ticker = train(rollout_rl_kwargs, steps_collected, epoch_ticker)
 
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
-            if txt == 'v':
-                print('Visualising')
-                rollout_trajectories(n_steps = max_ep_len,env = test_env, max_ep_len = max_ep_len, actor = model.actor.get_deterministic_action, summary_writer=summary_writer, current_total_steps = steps_collected, train = False, render = render, exp_name = exp_name, return_episode = True, goal_based = True)
+            if txt.isnumeric():
+                rollout_viz_kwargs['n_steps'] = max_ep_len * int(txt)
+                rollout_viz_kwargs['current_total_steps'] = steps_collected
+                rollout_trajectories(**rollout_viz_kwargs)
             print('Returning to Training.')
             if txt == 'q':
                 raise Exception
@@ -259,12 +260,12 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args()
-
-    experiment_name = 'HER_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
+    exp_name = 'HER_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
+    save_file(__file__, exp_name, args)
 
     training_loop(lambda : gym.make(args.env),
       ac_kwargs=dict(hidden_sizes=[args.hid]*args.l),
-      gamma=args.gamma, seed=args.seed, epochs=args.epochs, load = args.load, exp_name = experiment_name, max_ep_len = args.max_ep_len, render = True, strategy = args.strategy)
+      gamma=args.gamma, seed=args.seed, epochs=args.epochs, load = args.load, exp_name = exp_name, max_ep_len = args.max_ep_len, render = True, strategy = args.strategy)
 
 
 

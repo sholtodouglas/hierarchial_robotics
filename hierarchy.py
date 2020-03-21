@@ -39,7 +39,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                          compare_states=None, start_state=None, lstm_actor=None,
                          only_use_baseline=False,
                          replay_obs=None, extra_info=None, sub_goal_testing_interval = 2, sub_goal_tester = None,
-                        relative =False, replay_buffer_low = None, replay_buffer_high = None, model_low = None, model_high= None, batch_size=None, supervised_kwargs = None, supervised_func_low= None, supervised_func_high=None):
+                        relative =False, replay_buffer_low = None, replay_buffer_high = None, model_low = None, model_high= None, batch_size=None,
+                                       supervised_kwargs = None, supervised_func_low= None, supervised_func_high=None, supervision_weighting= None):
 
 
     # reset the environment
@@ -128,7 +129,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
                         if supervised_func_high:
                             # if we have a function which provides a supervised loss term, use it.
-                            high_loss = supervised_func_high(**supervised_kwargs)
+                            high_loss = supervised_func_high(**supervised_kwargs) * supervision_weighting
                             model_high.supervised_update(batch, high_loss)
                         else:
                             model_high.update(batch)
@@ -205,7 +206,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                 batch = replay_buffer_low.sample_batch(batch_size)
                 if supervised_func_low:
                     # if we have a function which provides a supervised loss term, use it.
-                    low_loss = supervised_func_low(**supervised_kwargs)
+                    low_loss = supervised_func_low(**supervised_kwargs) * supervision_weighting
                     model_low.supervised_update(batch, low_loss)
                 else:
                     model_low.update(batch)
@@ -248,7 +249,8 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                   steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
                   polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=2500,
                   max_ep_len=200, save_freq=1, load=False, exp_name="Experiment_1", render=False, strategy='future',
-                  num_cpus='max', use_higher_level = True, lower_achieved_state = 'achieved_goal'):
+                  num_cpus='max', replan_interval = 5,
+                   lower_achieved_state='controllable_achieved_goal', substitute_action= True, use_higher_level=True, relative=False, play = False):
     print('Begin')
     #tf.random.set_seed(seed)
     torch.manual_seed(seed)
@@ -264,19 +266,11 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         test_env.reset()
 
 
-    # Little bit of short term conif
-    use_higher_level = True
-    replan_interval = 5
-    lower_achieved_state ='controllable_achieved_goal' # 'achieved_goal' #  'full_positional_state' #
-    substitute_action = True
-    relative = False
+
 
     # Get Env dimensions for networks
     obs_dim_higher = env.observation_space.spaces['observation'].shape[0] + env.observation_space.spaces['desired_goal'].shape[0]
-    # now, our action can either be the  full state, or just the controllable aspects.
-
     act_dim_higher = env.observation_space.spaces[lower_achieved_state].shape[0]
-
 
     if use_higher_level:
         obs_dim_lower = env.observation_space.spaces['observation'].shape[0] + act_dim_higher
@@ -287,47 +281,28 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
 
     # higher level model
     act_limit_higher = env.ENVIRONMENT_BOUNDS
-    SAC_higher = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_higher')
+    high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_higher')
     act_limit_lower = env.action_space.high[0]
-    SAC_lower = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_lower')
+    low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_lower')
     # Experience buffer
-    replay_buffer_higher = HERReplayBuffer(env, obs_dim_higher, act_dim_higher, replay_size, n_sampled_goal=4,
-                                    goal_selection_strategy=strategy)
-    replay_buffer_lower = HERReplayBuffer(env, obs_dim_lower, act_dim_lower, replay_size, n_sampled_goal=4,
-                                    goal_selection_strategy=strategy)
+    replay_buffer_higher = HERReplayBuffer(env, obs_dim_higher, act_dim_higher, replay_size, n_sampled_goal=4,goal_selection_strategy=strategy)
+    replay_buffer_lower = HERReplayBuffer(env, obs_dim_lower, act_dim_lower, replay_size, n_sampled_goal=4, goal_selection_strategy=strategy)
     # Logging
-    start_time = datetime.now()
-    train_log_dir = 'logs/' + exp_name + str(start_time)+'-Replan_'+str(replan_interval)
+    train_log_dir = 'logs/' + exp_name + str(datetime.now())+'-Replan_'+str(replan_interval)
     summary_writer = SummaryWriter(train_log_dir)
 
-    sub_goal_tester =  SAC_lower.actor.get_deterministic_action # None  #
 
-    def update_models(model, replay_buffer, steps, batch_size):
-        for j in range(steps):
-            batch = replay_buffer.sample_batch(batch_size)
-            model.update(batch)
+    def train(rollout_kwargs, steps_collected, epoch_ticker):
 
-    def train(env, s_i, max_ep_len, SAC_lower, SAC_higher, summary_writer, steps_collected, exp_name, total_steps, replay_buffer_lower, replay_buffer_higher,
-              batch_size, epoch_ticker, use_higher_level, substitute_action, replan_interval, lower_achieved_state, sub_goal_tester):
-
-
-
-        episodes = rollout_trajectories_hierarchially(n_steps=max_ep_len, env=env, start_state=s_i, max_ep_len = max_ep_len, actor_lower = SAC_lower.actor.get_stochastic_action,
-                                        actor_higher = SAC_higher.actor.get_stochastic_action, replan_interval = replan_interval,lower_achieved_state = lower_achieved_state,
-                                        substitute_action = substitute_action, use_higher_level = use_higher_level, summary_writer = summary_writer, current_total_steps = steps_collected,
-                                        exp_name = exp_name, relative = relative, return_episode = True, sub_goal_testing_interval = 3, sub_goal_tester = sub_goal_tester, replay_buffer_low = replay_buffer_lower,
-                                        replay_buffer_high = replay_buffer_higher, model_low = SAC_lower, model_high= SAC_higher, batch_size=batch_size) #
-
+        rollout_kwargs['current_total_steps'] = steps_collected
+        episodes = rollout_trajectories_hierarchially(**rollout_rl_kwargs) #
         steps_collected += episodes['n_steps_lower']
         [replay_buffer_lower.store_hindsight_episode(e) for e in episodes['episodes_lower']]
         [replay_buffer_higher.store_hindsight_episode(e) for e in episodes['episodes_higher']]
-        # No longer do this as updating during
-        # update_models(SAC_lower, replay_buffer_lower, steps=max_ep_len, batch_size=batch_size)
-        # update_models(SAC_higher, replay_buffer_higher, steps=episodes['n_steps_higher'], batch_size=batch_size) # gradient step it the same as the number of loweer steps because there are more.
 
         if steps_collected >= epoch_ticker:
-            SAC_lower.save_weights()
-            SAC_higher.save_weights()
+            low_model.save_weights()
+            high_model.save_weights()
             epoch_ticker += steps_per_epoch
 
         return steps_collected, epoch_ticker
@@ -337,51 +312,57 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     steps_collected = 0
     epoch_ticker = 0
 
-    s_i, s_g = None, None
+
+    rollout_rl_kwargs = {'n_steps':max_ep_len, 'env':env,
+                       'max_ep_len':max_ep_len, 'actor_lower':low_model.actor.get_stochastic_action,
+                    'actor_higher':high_model.actor.get_stochastic_action, 'replan_interval':replan_interval,
+                    'lower_achieved_state':lower_achieved_state, 'exp_name':exp_name,'substitute_action':substitute_action,
+                    'current_total_steps':steps_collected, 'use_higher_level': use_higher_level, 'summary_writer':summary_writer,
+                    'return_episode':True, 'sub_goal_testing_interval':3, 'relative': relative,
+                    'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower,
+                    'replay_buffer_high': replay_buffer_higher, 'model_low':low_model, 'model_high':high_model, 'batch_size':batch_size}
+
+    rollout_random_kwargs = rollout_rl_kwargs.copy()
+    rollout_random_kwargs['sub_goal_tester'] = None
+    rollout_random_kwargs['actor_lower'] = 'random'
+    rollout_random_kwargs['n_steps'] = start_steps
+
+    rollout_viz_kwargs = rollout_rl_kwargs.copy()
+    rollout_viz_kwargs['actor_lower'] = low_model.actor.get_deterministic_action
+    rollout_viz_kwargs['actor_higher'] = high_model.actor.get_deterministic_action
+    rollout_viz_kwargs['train'] = False
+    rollout_viz_kwargs['env'] = test_env
+    rollout_viz_kwargs['render'] = render
+    rollout_viz_kwargs['replay_buffer_low'] = None
+    rollout_viz_kwargs['replay_buffer_high'] = None
+
+
+    if play:
+        while(1):
+            rollout_viz_kwargs['n_steps'] = max_ep_len
+            rollout_viz_kwargs['current_total_steps'] += 1
+            rollout_trajectories_hierarchially(**rollout_viz_kwargs)
 
     if not load:
         # collect some initial random steps to initialise
-        episodes = rollout_trajectories_hierarchially(n_steps=start_steps, env=env, start_state=s_i, max_ep_len=max_ep_len,
-                                        actor_lower='random',
-                                        actor_higher=SAC_higher.actor.get_stochastic_action, replan_interval=replan_interval,
-                                        lower_achieved_state=lower_achieved_state,
-                                        substitute_action=substitute_action, relative = relative, use_higher_level=use_higher_level, summary_writer=summary_writer,
-                                        current_total_steps=steps_collected,
-                                        exp_name=exp_name, return_episode=True, replay_buffer_low = replay_buffer_lower, replay_buffer_high = replay_buffer_higher,
-                                        model_low = SAC_lower, model_high= SAC_higher, batch_size=batch_size)
+        steps_collected, epoch_ticker = train(rollout_random_kwargs, steps_collected, epoch_ticker)
 
-        steps_collected += episodes['n_steps_lower']
-        [replay_buffer_lower.store_hindsight_episode(e) for e in episodes['episodes_lower']]
-        [replay_buffer_higher.store_hindsight_episode(e) for e in episodes['episodes_higher']]
-        # update_models(SAC_lower, replay_buffer_lower, steps=max_ep_len, batch_size=batch_size)
-        # update_models(SAC_higher, replay_buffer_higher, steps=episodes['n_steps_higher'], batch_size=batch_size)
-
-    # now act with our actor, and alternately collect data, then train.
     print('Done Initialisation, begin training')
-
     while steps_collected < total_steps:
         try:
-            steps_collected, epoch_ticker = train(env, s_i, max_ep_len, SAC_lower, SAC_higher, summary_writer, steps_collected, exp_name,
-                                                  total_steps, replay_buffer_lower, replay_buffer_higher, batch_size, epoch_ticker, use_higher_level,
-                                                  substitute_action, replan_interval, lower_achieved_state, sub_goal_tester)
+            steps_collected, epoch_ticker = train(rollout_rl_kwargs, steps_collected, epoch_ticker)
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
-            if txt == 'v':
-                print('Visualising')
-
-                rollout_trajectories_hierarchially(n_steps = max_ep_len, env = test_env, start_state = s_i, max_ep_len = max_ep_len,
-                                actor_lower = SAC_lower.actor.get_deterministic_action,
-                                actor_higher = SAC_higher.actor.get_deterministic_action, relative = relative, replan_interval = replan_interval,
-                                lower_achieved_state = lower_achieved_state,
-                                substitute_action = substitute_action, use_higher_level = use_higher_level, train=False, render=render, summary_writer = summary_writer,
-                                current_total_steps = steps_collected,
-                                exp_name = exp_name, return_episode = True)
-
+            if txt.isnumeric():
+                rollout_viz_kwargs['n_steps'] = max_ep_len * int(txt)
+                rollout_viz_kwargs['n_steps_collected'] = steps_collected
+                rollout_trajectories_hierarchially(**rollout_viz_kwargs)
+                print('Returning to Training.')
             elif txt == 'q':
                 raise Exception
             elif txt == 's':
-                SAC_lower.save_weights()
-                SAC_higher.save_weights()
+                low_model.save_weights()
+                high_model.save_weights()
                 with open('collected_data/'+exp_name+'rbuf.pickle', 'wb') as handle:
                     pickle.dump(replay_buffer_higher, handle, protocol=pickle.HIGHEST_PROTOCOL)
                 print('Saved buff')
@@ -393,7 +374,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default='pointMass-v0')
-    parser.add_argument('--hid', type=int, default=64)
+    parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
@@ -404,19 +385,24 @@ if __name__ == '__main__':
     parser.add_argument('--load', type=str2bool, default=False)
     parser.add_argument('--render', type=str2bool, default=False)
     parser.add_argument('--strategy', type=str, default='future')
-    parser.add_argument('--higher_level', type=str2bool, default=True)
+    parser.add_argument('--relative', type=str2bool, default=False)
+    parser.add_argument('--use_higher_level', type=str2bool, default=True)
+    parser.add_argument('--replan_interval', type=int, default=10)
+    parser.add_argument('--lower_achieved_state', type=str,
+                        default='full_positional_state')  # 'controllable_achieved_goal' #'achieved_goal'#
+    parser.add_argument('--substitute_action', type=str2bool, default=True)
+    parser.add_argument('--play', type=str2bool, default=False)
 
     args = parser.parse_args()
 
-    experiment_name = 'test_arch64' + args.env
+    exp_name = 'test_arch64' + args.env
 
-    # save the current file
-    with open(__file__, 'r') as f:
-        with open('logs/snapshots/'+experiment_name+str(datetime.now())+'.py', 'w') as out:
-            for line in (f.readlines()):  # remove last 7 lines
-                print(line, end='', file=out)
+    # save the current file and config
+    save_file(__file__, exp_name, args)
 
     training_loop(lambda: gym.make(args.env),
                   ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
-                  gamma=args.gamma, seed=args.seed, epochs=args.epochs, load=args.load, exp_name=experiment_name,
-                  max_ep_len=args.max_ep_len, render=True, strategy=args.strategy)
+                  gamma=args.gamma, seed=args.seed, epochs=args.epochs, load=args.load, exp_name=exp_name,
+                  max_ep_len=args.max_ep_len, render=True, strategy=args.strategy, relative= args.relative, play= args.play,
+                  replan_interval = args.replan_interval, lower_achieved_state=args.lower_achieved_state,
+                  substitute_action= args.substitute_action, use_higher_level=args.use_higher_level)

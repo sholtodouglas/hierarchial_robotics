@@ -3,6 +3,7 @@ import tensorflow as tf
 import numpy as np
 import copy
 import argparse
+from datetime import datetime
 
 
 def assign_variables(net1, net2):
@@ -160,3 +161,15 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def save_file(file, experiment_name, args):
+    with open(file, 'r') as f:
+        with open('logs/snapshots/'+experiment_name+str(datetime.now())+'.py', 'w') as out:
+            # print the filepath and arguments as the first lines.
+            print(file, file=out)
+            for i in vars(args):
+                print('--'+i, getattr(args, i), file=out)
+            # then print the rest of the file.
+            for line in (f.readlines()):
+                print(line, end='', file=out)

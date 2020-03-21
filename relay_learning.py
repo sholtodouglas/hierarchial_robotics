@@ -177,29 +177,21 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, replay_buffer_higher, roll
 
 
 def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, batch_size =100, load=False, relative=False,
-                   play=False, max_ep_len = 200, replay_size=int(1e6), steps_per_epoch=10000, lr=1e-3, seed=0):
+                   play=False, max_ep_len = 200, replay_size=int(1e6), steps_per_epoch=10000, lr=1e-3, seed=0, replan_interval = 10,
+                   lower_achieved_state='full_positional_state', substitute_action= True, use_higher_level=True, use_supervision_with_RL=True, supervision_weighting=1):
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
     torch.manual_seed(seed)
     np.random.seed(seed)
-
-    replan_interval = 5
-    lower_achieved_state = 'controllable_achieved_goal' #'achieved_goal' # 'full_positional_state' #
-    substitute_action = True
-    use_higher_level = True
-    use_supervision_with_RL = True
     data = np.load(filepath)
     obs = data['obs']
     ags = data['achieved_goals']
-
-    print('Rendering Test Rollouts')
+    higher_level_acts = data[lower_achieved_state+'s']
+    lower_level_acts = data['acts']
     test_env.render(mode='human')
     test_env.reset()
 
-    higher_level_acts = data[lower_achieved_state+'s']
-
-    lower_level_acts = data['acts']
 
     train_length = int(0.8 * (len(obs)))
     # this is a pretty wasteful amount of copying - pending translation to pytorch dataloader.
@@ -240,14 +232,13 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, bat
                                           goal_selection_strategy='final')
 
 
-    print('Done Initialisation, begin training')
-    steps = 0
 
+    steps = 0
     epoch_ticker = 0
 
     train_kwargs = {'train_obs': train_obs, 'train_ags': train_ags, 'train_higher_level_acts':train_higher_level_acts,
                     'train_lower_level_acts': train_lower_level_acts, 'replan_interval': replan_interval, 'low_policy':low_policy,
-                    'high_policy': high_policy, 'high_optimizer':high_optimizer, 'low_optimizer':low_optimizer, 'train_summary_writer': train_summary_writer,
+                    'high_policy': high_policy, 'high_optimizer':high_optimizer, 'low_optimizer':low_optimizer,
                     'steps': steps, 'relative': relative, 'train_summary_writer': train_summary_writer}
 
 
@@ -258,7 +249,7 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, bat
     rollout_viz_kwargs = {'env': test_env, 'max_ep_len': max_ep_len,
                 'actor_lower': low_model.ac.get_deterministic_action, 'actor_higher': high_model.ac.get_deterministic_action,
                 'replan_interval': replan_interval, 'lower_achieved_state': lower_achieved_state, 'train': False,
-                'use_higher_level': use_higher_level, 'current_total_steps': steps, 'exp_name': exp_name, 'relative': relative}
+                'use_higher_level': use_higher_level, 'summary_writer':valid_summary_writer, 'current_total_steps': steps, 'exp_name': exp_name, 'relative': relative}
 
     if use_supervision_with_RL:
         supervised_kwargs, supervised_func_low, supervised_func_high = train_kwargs, find_supervised_loss_low, find_supervised_loss_high
@@ -273,26 +264,27 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, bat
                     'return_episode':True, 'sub_goal_testing_interval':3, 'relative': relative,
                     'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower,
                     'replay_buffer_high': replay_buffer_higher, 'model_low':low_model, 'model_high':high_model, 'batch_size':batch_size,
-                    'supervised_kwargs':supervised_kwargs, 'supervised_func_low': supervised_func_low, 'supervised_func_high': supervised_func_high}
+                    'supervised_kwargs':supervised_kwargs, 'supervised_func_low': supervised_func_low, 'supervised_func_high': supervised_func_high
+                         , 'supervision_weighting': supervision_weighting}
 
 
     if play:
         while(1):
             rollout_viz_kwargs['n_steps'] = max_ep_len
+            rollout_viz_kwargs['current_total_steps'] += 1
             rollout_viz_kwargs['render'] = True
             rollout_trajectories_hierarchially(**rollout_viz_kwargs)
+
+    print('Done Initialisation, begin training')
 
 
     while steps < n_steps:
         try:
-            if steps < 5000 and not load:
-
+            if steps < 10000 and not load:
                 steps =  pretrain(train_kwargs, valid_kwargs, steps)
             else:
-
                 steps, epoch_ticker = train(low_model, high_model, replay_buffer_lower, replay_buffer_higher, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps,
                       epoch_ticker, steps_per_epoch, batch_size)
-
 
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
@@ -328,23 +320,33 @@ if __name__ == '__main__':
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--load', type=str2bool, default=False)
     parser.add_argument('--relative', type=str2bool, default=False)
-    parser.add_argument('--play', type= str2bool, default=False)
+    parser.add_argument('--use_higher_level', type=str2bool, default=True)
+    parser.add_argument('--replan_interval', type=int, default=10)
+    parser.add_argument('--lower_achieved_state', type=str, default='full_positional_state') # 'controllable_achieved_goal' #'achieved_goal'#
+    parser.add_argument('--substitute_action', type=str2bool, default=True)
+    parser.add_argument('--use_supervision_with_RL', type=str2bool, default=True)
+    parser.add_argument('--play', type=str2bool, default=False)
+    parser.add_argument('--supervision_weighting', type=int, default=1)
 
 
     args = parser.parse_args()
     if args.exp_name is None:
-        exp_name = 'relay_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
+        exp_name = 'relayachieved_1'#+args.env
     else:
-        exp_name = args.exp_name
-
-
+        exp_name = 'relay'+args.exp_name
+#relayfullpos_x
+#relaycontrollable_x
+#relayachieved_1
     # pybullet needs the GUI env to be reset first for our noncollision stuff to work.
 
+    save_file(__file__, exp_name, args)
 
     env = gym.make(args.env)
     test_env = gym.make(args.env)
-    relay_learning(args.filepath, env, test_env, exp_name, args.n_steps, [args.hid]*args.l,args.batch_size,
-                   load =  args.load, relative = args.relative,play= args.play)
+    relay_learning(args.filepath, env, test_env, exp_name, args.n_steps, [args.hid]*args.l, batch_size = args.batch_size,
+                   load =  args.load, relative = args.relative, play= args.play, replan_interval = args.replan_interval,
+                   lower_achieved_state=args.lower_achieved_state, substitute_action= args.substitute_action, use_higher_level=args.use_higher_level,
+                   use_supervision_with_RL=args.use_supervision_with_RL, supervision_weighting=args.supervision_weighting)
 
 
 

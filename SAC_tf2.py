@@ -163,7 +163,7 @@ class ReplayBuffer:
 #@title SAC Model{ display-mode: "form" }
 class SAC_model():
   
-  def __init__(self, act_limit, obs_dim, act_dim, hidden_sizes,lr = 0.0001,gamma = None, alpha = None, polyak = None,  load = False, exp_name = 'Exp1', path = 'saved_models/'):
+  def __init__(self, act_limit, obs_dim, act_dim, hidden_sizes,lr = 0.0001,gamma = None, alpha = None, polyak = None,  load = False, exp_name = 'Exp1', path = 'saved_models/', replay_buffer=None):
     self.act_limit = act_limit
     print(act_limit, '-----------------------')
     self.pi_optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
