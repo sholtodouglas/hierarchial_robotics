@@ -40,7 +40,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                          only_use_baseline=False,
                          replay_obs=None, extra_info=None, sub_goal_testing_interval = 2, sub_goal_tester = None,
                         relative =False, replay_buffer_low = None, replay_buffer_high = None, model_low = None, model_high= None, batch_size=None,
-                                       supervised_kwargs = None, supervised_func_low= None, supervised_func_high=None, supervision_weighting= None):
+                        supervised_kwargs = None, supervised_func_low= None, supervised_func_high=None, supervision_weighting= None,
+                        use_RL_on_higher_level = True ):
 
 
     # reset the environment
@@ -129,8 +130,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
                         if supervised_func_high:
                             # if we have a function which provides a supervised loss term, use it.
-                            high_loss = supervised_func_high(**supervised_kwargs) * supervision_weighting
-                            model_high.supervised_update(batch, high_loss)
+                            high_loss = supervised_func_high(**supervised_kwargs)
+                            model_high.supervised_update(batch, high_loss * supervision_weighting,  use_RL= use_RL_on_higher_level)
                         else:
                             model_high.update(batch)
 
@@ -206,8 +207,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                 batch = replay_buffer_low.sample_batch(batch_size)
                 if supervised_func_low:
                     # if we have a function which provides a supervised loss term, use it.
-                    low_loss = supervised_func_low(**supervised_kwargs) * supervision_weighting
-                    model_low.supervised_update(batch, low_loss)
+                    low_loss = supervised_func_low(**supervised_kwargs)
+                    model_low.supervised_update(batch, low_loss * supervision_weighting)
                 else:
                     model_low.update(batch)
 
@@ -265,6 +266,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         test_env.render(mode='human')
         test_env.reset()
 
+    test_env.activate_movable_goal()
 
 
 
@@ -332,7 +334,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     rollout_viz_kwargs['actor_higher'] = high_model.actor.get_deterministic_action
     rollout_viz_kwargs['train'] = False
     rollout_viz_kwargs['env'] = test_env
-    rollout_viz_kwargs['render'] = render
+    rollout_viz_kwargs['render'] = True
     rollout_viz_kwargs['replay_buffer_low'] = None
     rollout_viz_kwargs['replay_buffer_high'] = None
 
@@ -341,6 +343,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         while(1):
             rollout_viz_kwargs['n_steps'] = max_ep_len
             rollout_viz_kwargs['current_total_steps'] += 1
+
             rollout_trajectories_hierarchially(**rollout_viz_kwargs)
 
     if not load:
@@ -355,7 +358,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
             txt = input("\nWhat would you like to do: ")
             if txt.isnumeric():
                 rollout_viz_kwargs['n_steps'] = max_ep_len * int(txt)
-                rollout_viz_kwargs['n_steps_collected'] = steps_collected
+                rollout_viz_kwargs['current_total_steps'] = steps_collected
                 rollout_trajectories_hierarchially(**rollout_viz_kwargs)
                 print('Returning to Training.')
             elif txt == 'q':
@@ -380,22 +383,25 @@ if __name__ == '__main__':
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=1500)
     parser.add_argument('--max_ep_len', type=int,
-                        default=200)  # fetch reach learns amazingly if 50, but not if 200 -why?
-    parser.add_argument('--exp_name', type=str, default='experiment_1')
+                        default=150)  # fetch reach learns amazingly if 50, but not if 200 -why?
+    parser.add_argument('--exp_name', type=str, default=None)
     parser.add_argument('--load', type=str2bool, default=False)
     parser.add_argument('--render', type=str2bool, default=False)
     parser.add_argument('--strategy', type=str, default='future')
     parser.add_argument('--relative', type=str2bool, default=False)
     parser.add_argument('--use_higher_level', type=str2bool, default=True)
-    parser.add_argument('--replan_interval', type=int, default=10)
+    parser.add_argument('--replan_interval', type=int, default=5)
     parser.add_argument('--lower_achieved_state', type=str,
-                        default='full_positional_state')  # 'controllable_achieved_goal' #'achieved_goal'#
+                        default='controllable_achieved_goal')  # 'full_positional_state' #'achieved_goal'#
     parser.add_argument('--substitute_action', type=str2bool, default=True)
     parser.add_argument('--play', type=str2bool, default=False)
 
     args = parser.parse_args()
 
-    exp_name = 'test_arch64' + args.env
+    if args.exp_name:
+        exp_name = args.exp_name
+    else:
+        exp_name = args.exp_name +'_hier-'+ args.env
 
     # save the current file and config
     save_file(__file__, exp_name, args)

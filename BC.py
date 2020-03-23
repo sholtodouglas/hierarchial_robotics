@@ -19,7 +19,7 @@ from datetime import datetime
 
 # Behavioural clone this mf.
 
-def step(obs, acts, policy, summary_writer, steps, batch_size):
+def step(obs, acts, policy, batch_size):
     indexes = np.random.choice(obs.shape[0], batch_size)
     obs, acts = obs[indexes, :], acts[indexes, :]
     mu, _, distrib = policy(obs)
@@ -29,44 +29,46 @@ def step(obs, acts, policy, summary_writer, steps, batch_size):
 
 def train_step(train_obs, train_acts, optimizer, policy, summary_writer=None, steps=None, batch_size = 512):
     optimizer.zero_grad()
-    loss = step(train_obs, train_acts, policy, summary_writer, steps, batch_size)
+    loss = step(train_obs, train_acts, policy, batch_size)
     loss.backward()
     optimizer.step()
     summary_writer.add_scalar('BC_MSE_loss', loss, steps)
     return loss
 
 def test_step(test_obs, test_acts, policy, summary_writer, steps, batch_size = 512):
-    loss = step(test_obs, test_acts, policy, summary_writer, steps, batch_size)
+    loss = step(test_obs, test_acts, policy, batch_size)
     summary_writer.add_scalar('BC_MSE_loss', loss, steps)
     return loss
 
+def find_supervised_loss(obs, acts, optimizer, policy, summary_writer, steps, batch_size=512):
+    optimizer.zero_grad()
+    loss = step(obs, acts, policy, batch_size)
+    summary_writer.add_scalar('BC_MSE_loss', loss, steps)
+    #don't step, we sum this loss with the policy loss in the RL model and step there.
+    return loss
 
-def save_policy(policy, exp_name, path = 'saved_models/'):
-    try:
-        os.makedirs(path + exp_name)
-    except Exception as e:
-        # print(e)
-        pass
-    torch.save(policy.state_dict(), path + exp_name + '/' + 'actor.pth')
-    print('Saved model at: ', path + exp_name + '/' + 'actor.pth')
 
-def behavioural_clone(filepath, env, exp_name, n_steps, batch_size, goal_based, architecture, load, max_ep_len = 400):
-    # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
-    # trajectory we can't make mistakes about trajectory borders
+def load_data(filepath, goal_based=False):
     data = np.load(filepath)
-
     if goal_based:
         obs = np.concatenate([data['obs'], data['desired_goals']], axis=-1)
     else:
         obs = data['obs']
 
     acts = data['acts']
-
-    obs, acts = torch.as_tensor(np.concatenate(obs, axis = 0), dtype=torch.float32).cuda(), torch.as_tensor(np.concatenate(acts, axis = 0), dtype=torch.float32).cuda()
+    obs, acts = torch.as_tensor(np.concatenate(obs, axis=0), dtype=torch.float32).cuda(), torch.as_tensor(
+        np.concatenate(acts, axis=0), dtype=torch.float32).cuda()
     train_length = int(0.8 * (len(obs)))
-    train_obs,train_acts  = obs[:train_length, :], acts[:train_length, :]
-    valid_obs,  valid_acts  = obs[train_length:, :], acts[train_length:, :]
-    print(train_obs.shape, valid_obs.shape)
+    train_obs, train_acts = obs[:train_length, :], acts[:train_length, :]
+    valid_obs, valid_acts = obs[train_length:, :], acts[train_length:, :]
+    return train_obs, train_acts, valid_obs, valid_acts
+
+def behavioural_clone(filepath, env, exp_name, n_steps, batch_size, goal_based, architecture, load, max_ep_len = 400):
+    # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
+    # trajectory we can't make mistakes about trajectory borders
+
+    train_obs, train_acts, valid_obs, valid_acts = load_data(filepath, goal_based=goal_based)
+
     obs_dim = env.observation_space.spaces['observation'].shape[0] + env.observation_space.spaces['desired_goal'].shape[0]
     act_dim, act_limit = env.action_space.shape[0], env.action_space.high[0]
 
@@ -85,9 +87,7 @@ def behavioural_clone(filepath, env, exp_name, n_steps, batch_size, goal_based, 
     while steps < n_steps:
         try:
             train_step(train_obs, train_acts, optimizer, policy, train_summary_writer, steps, batch_size = batch_size)
-
             if steps % 50 == 0:
-
                 l = test_step(valid_obs, valid_acts, policy, valid_summary_writer, steps, batch_size)
                 print('Test Loss: ', steps, l)
 
@@ -102,9 +102,9 @@ def behavioural_clone(filepath, env, exp_name, n_steps, batch_size, goal_based, 
             if txt == 'q':
                 raise Exception
             if txt == 's':
-                save_policy(policy, exp_name)
+                model.save_weights()
 
-    save_policy(policy, exp_name)
+    model.save_weights()
 
 
 
@@ -121,7 +121,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--filepath', type=str, default="")
     parser.add_argument('--env', type=str, default='pointMass-v0')
-    parser.add_argument('--exp_name', type=str, default=None)
     parser.add_argument('--n_steps', type=int, default=100000)
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--hid', type=int, default=256)

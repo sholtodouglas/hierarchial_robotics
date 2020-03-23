@@ -24,6 +24,7 @@ from tqdm import tqdm
 from natsort import natsorted, ns
 from PrioritizedReplayBuffer import PER
 from datetime import datetime
+from BC import find_supervised_loss, load_data
 
 #TODO Answer why reward scaling makes such a damn difference?
 
@@ -154,7 +155,8 @@ class HERReplayBuffer:
 def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
         polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=1000,
-        max_ep_len=300, load = False, exp_name = "Experiment_1", render = False, strategy = 'future', num_cpus = 'max'):
+        max_ep_len=300, load = False, exp_name = "Experiment_1", render = False, strategy = 'future',
+        BC_filepath= None, play=False, num_cpus = 'max'):
 
     print('Begin')
 
@@ -209,8 +211,19 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
 
     rollout_rl_kwargs = {'n_steps': max_ep_len, 'env' : env, 'max_ep_len' : max_ep_len, 'actor' : model.actor.get_stochastic_action,
                          'summary_writer' : summary_writer, 'exp_name' : exp_name, 'return_episode' : True, 'goal_based' : True,
-                         'replay_buffer' : replay_buffer, 'model':model, 'batch_size': batch_size, 'current_total_steps':steps_collected}
-    
+                         'replay_buffer' : replay_buffer, 'model':model, 'batch_size': batch_size, 'current_total_steps':steps_collected
+                         , 'supervised_kwargs':None, 'supervised_func':None}
+
+    if BC_filepath:
+        train_obs, train_acts, valid_obs, valid_acts = load_data(BC_filepath, goal_based=True)
+        BC_kwargs = {'obs':train_obs,'acts': train_acts, 'optimizer': model.pi_optimizer, 'policy':model.ac.pi,
+                     'summary_writer':summary_writer, 'steps':steps_collected}
+        rollout_rl_kwargs['supervised_kwargs'], rollout_rl_kwargs['supervised_func'] = BC_kwargs, find_supervised_loss
+
+
+
+
+
     rollout_random_kwargs = rollout_rl_kwargs.copy()
     rollout_random_kwargs['actor'] = 'random'
     rollout_random_kwargs['n_steps'] = start_steps
@@ -222,10 +235,19 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     rollout_viz_kwargs['replay_buffer'] = None
     rollout_viz_kwargs['actor'] = model.actor.get_deterministic_action
 
+    if play:
+        while(1):
+            test_env.activate_movable_goal()
+            rollout_viz_kwargs['n_steps'] = max_ep_len
+            rollout_viz_kwargs['current_total_steps'] += 1
+            rollout_trajectories(**rollout_viz_kwargs)
+
+
     if not load:
     # collect some initial random steps to initialise
         steps_collected, epoch_ticker = train(rollout_random_kwargs, steps_collected, epoch_ticker)
 
+    print('Random Init Done')
     while steps_collected < total_steps:
         try:
             rollout_rl_kwargs['current_total_steps'] = steps_collected
@@ -251,21 +273,24 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=1500)
-    parser.add_argument('--max_ep_len', type=int, default=200) # fetch reach learns amazingly if 50, but not if 200 -why?
-    parser.add_argument('--exp_name', type=str, default='experiment_1')
+    parser.add_argument('--max_ep_len', type=int, default=150) # fetch reach learns amazingly if 50, but not if 200 Why? Because thats the interval we add hindsight episodes at!
+    parser.add_argument('--exp_name', type=str, default='experiment_2')
     parser.add_argument('--load', type=str2bool, default=False)
     parser.add_argument('--render', type=str2bool, default=False)
     parser.add_argument('--strategy', type=str, default='future')
-
+    parser.add_argument('--BC_filepath', type=str, default=None)
+    parser.add_argument('--play', type=str2bool, default=False)
 
 
     args = parser.parse_args()
-    exp_name = 'HER_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
+    exp_name = args.exp_name + '_HER_'+args.env
     save_file(__file__, exp_name, args)
 
     training_loop(lambda : gym.make(args.env),
       ac_kwargs=dict(hidden_sizes=[args.hid]*args.l),
-      gamma=args.gamma, seed=args.seed, epochs=args.epochs, load = args.load, exp_name = exp_name, max_ep_len = args.max_ep_len, render = True, strategy = args.strategy)
+      gamma=args.gamma, seed=args.seed, epochs=args.epochs, load = args.load, exp_name = exp_name,
+                  max_ep_len = args.max_ep_len, render = True, strategy = args.strategy, BC_filepath=args.BC_filepath
+                  , play = args.play)
 
 
 

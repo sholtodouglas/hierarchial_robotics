@@ -143,8 +143,8 @@ def pretrain(train_kwargs, valid_kwargs, steps):
     steps += 1
     return steps
 
-def train(SAC_lower, SAC_higher, replay_buffer_lower, replay_buffer_higher, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps_collected,
-          epoch_ticker, steps_per_epoch, batch_size):
+def train(low_model, high_model, replay_buffer_lower, replay_buffer_higher, rollout_rl_kwargs, valid_kwargs, steps_collected,
+          epoch_ticker, steps_per_epoch):
     # collect and store the trajectories
     #
     # if steps_collected < 5000:
@@ -166,8 +166,8 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, replay_buffer_higher, roll
     steps_collected += episodes['n_steps_lower']
 
     if steps_collected >= epoch_ticker:
-        # SAC_lower.save_weights()
-        # SAC_higher.save_weights()
+        low_model.save_weights()
+        high_model.save_weights()
         epoch_ticker += steps_per_epoch
 
     return steps_collected, epoch_ticker
@@ -177,8 +177,9 @@ def train(SAC_lower, SAC_higher, replay_buffer_lower, replay_buffer_higher, roll
 
 
 def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, batch_size =100, load=False, relative=False,
-                   play=False, max_ep_len = 200, replay_size=int(1e6), steps_per_epoch=10000, lr=1e-3, seed=0, replan_interval = 10,
-                   lower_achieved_state='full_positional_state', substitute_action= True, use_higher_level=True, use_supervision_with_RL=True, supervision_weighting=1):
+                   play=False, max_ep_len = 150, replay_size=int(1e6), steps_per_epoch=10000, lr=1e-3, seed=0, replan_interval = 10,
+                   lower_achieved_state='full_positional_state', substitute_action= True, use_higher_level=True,
+                   use_supervision_with_RL=True, supervision_weighting=1,  use_RL_on_higher_level=True, pretrain_steps=10000):
     # all data comes as [sequence, timesteps, dimension] so that when we are doing relay learning in the
     # trajectory we can't make mistakes about trajectory borders
 
@@ -212,12 +213,12 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, bat
     act_limit_lower =  env.action_space.high[0]
 
     start_time = datetime.now()
-    train_log_dir, valid_log_dir  = 'logs/' + str(start_time) + 'BC_train_' +exp_name+'_:' ,  'logs/' + str(start_time)+ 'BC_valid_' +exp_name+'_:'
+    train_log_dir, valid_log_dir  = 'logs/' + str(start_time) + 'train_' +exp_name+'_:' ,  'logs/' + str(start_time)+ 'valid_' +exp_name+'_:'
     train_summary_writer, valid_summary_writer = SummaryWriter(train_log_dir), SummaryWriter(valid_log_dir)
 
-    high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, architecture, lr=lr,  load=load, exp_name = 'high'+exp_name)
+    high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, architecture, lr=lr,  load=load, exp_name = exp_name+'_higher')
     #low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=lr, load=load, exp_name=exp_name.replace('relay', 'HER2'))
-    low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=lr, load=load, exp_name = 'low'+exp_name)
+    low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, architecture, lr=lr, load=load, exp_name = exp_name+'_lower')
     #TODO -----------
     high_policy = high_model.ac.pi
     low_policy = low_model.ac.pi
@@ -249,7 +250,8 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, bat
     rollout_viz_kwargs = {'env': test_env, 'max_ep_len': max_ep_len,
                 'actor_lower': low_model.ac.get_deterministic_action, 'actor_higher': high_model.ac.get_deterministic_action,
                 'replan_interval': replan_interval, 'lower_achieved_state': lower_achieved_state, 'train': False,
-                'use_higher_level': use_higher_level, 'summary_writer':valid_summary_writer, 'current_total_steps': steps, 'exp_name': exp_name, 'relative': relative}
+                'use_higher_level': use_higher_level, 'summary_writer':valid_summary_writer,
+                          'render':True, 'current_total_steps': steps, 'exp_name': exp_name, 'relative': relative}
 
     if use_supervision_with_RL:
         supervised_kwargs, supervised_func_low, supervised_func_high = train_kwargs, find_supervised_loss_low, find_supervised_loss_high
@@ -265,14 +267,15 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, bat
                     'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower,
                     'replay_buffer_high': replay_buffer_higher, 'model_low':low_model, 'model_high':high_model, 'batch_size':batch_size,
                     'supervised_kwargs':supervised_kwargs, 'supervised_func_low': supervised_func_low, 'supervised_func_high': supervised_func_high
-                         , 'supervision_weighting': supervision_weighting}
+                         , 'supervision_weighting': supervision_weighting, 'use_RL_on_higher_level': use_RL_on_higher_level}
 
 
     if play:
+        #test_env.activate_movable_goal()
+
         while(1):
             rollout_viz_kwargs['n_steps'] = max_ep_len
             rollout_viz_kwargs['current_total_steps'] += 1
-            rollout_viz_kwargs['render'] = True
             rollout_trajectories_hierarchially(**rollout_viz_kwargs)
 
     print('Done Initialisation, begin training')
@@ -280,11 +283,10 @@ def relay_learning(filepath, env, test_env, exp_name, n_steps, architecture, bat
 
     while steps < n_steps:
         try:
-            if steps < 10000 and not load:
+            if steps < pretrain_steps and not load:
                 steps =  pretrain(train_kwargs, valid_kwargs, steps)
             else:
-                steps, epoch_ticker = train(low_model, high_model, replay_buffer_lower, replay_buffer_higher, rollout_rl_kwargs, train_kwargs, valid_kwargs, steps,
-                      epoch_ticker, steps_per_epoch, batch_size)
+                steps, epoch_ticker = train(low_model, high_model,replay_buffer_lower, replay_buffer_higher, rollout_rl_kwargs, valid_kwargs, steps,epoch_ticker, steps_per_epoch)
 
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
@@ -314,7 +316,7 @@ if __name__ == '__main__':
     parser.add_argument('--filepath', type=str, default="")
     parser.add_argument('--env', type=str, default='pointMass-v0')
     parser.add_argument('--exp_name', type=str, default=None)
-    parser.add_argument('--n_steps', type=int, default=300000)
+    parser.add_argument('--n_steps', type=int, default=1000000)
     parser.add_argument('--batch_size', type=int, default=100)
     parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
@@ -327,18 +329,20 @@ if __name__ == '__main__':
     parser.add_argument('--use_supervision_with_RL', type=str2bool, default=True)
     parser.add_argument('--play', type=str2bool, default=False)
     parser.add_argument('--supervision_weighting', type=int, default=1)
-
+    parser.add_argument('--use_RL_on_higher_level', type=str2bool, default=True)
+    parser.add_argument('--pretrain_steps', type=int, default=10000)
+    parser.add_argument('--max_ep_len', type=int, default=150)
 
     args = parser.parse_args()
     if args.exp_name is None:
-        exp_name = 'relayachieved_1'#+args.env
+        exp_name = 'relay'+args.env+'-'+args.lower_achieved_state+'-'+str(args.replan_interval)
     else:
-        exp_name = 'relay'+args.exp_name
+        exp_name = args.exp_name
 #relayfullpos_x
 #relaycontrollable_x
 #relayachieved_1
     # pybullet needs the GUI env to be reset first for our noncollision stuff to work.
-
+    print('Experiment Name: ', exp_name)
     save_file(__file__, exp_name, args)
 
     env = gym.make(args.env)
@@ -346,7 +350,8 @@ if __name__ == '__main__':
     relay_learning(args.filepath, env, test_env, exp_name, args.n_steps, [args.hid]*args.l, batch_size = args.batch_size,
                    load =  args.load, relative = args.relative, play= args.play, replan_interval = args.replan_interval,
                    lower_achieved_state=args.lower_achieved_state, substitute_action= args.substitute_action, use_higher_level=args.use_higher_level,
-                   use_supervision_with_RL=args.use_supervision_with_RL, supervision_weighting=args.supervision_weighting)
+                   use_supervision_with_RL=args.use_supervision_with_RL, supervision_weighting=args.supervision_weighting,
+                   use_RL_on_higher_level=args.use_RL_on_higher_level, pretrain_steps = args.pretrain_steps, max_ep_len=args.max_ep_len)
 
 
 

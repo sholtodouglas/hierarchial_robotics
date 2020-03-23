@@ -142,14 +142,17 @@ class SAC_model():
         # Finally, update target networks by polyak averaging.
         self.polyak_target_update()
 
-    def supervised_update(self, data, supervised_loss):
+    def supervised_update(self, data, supervised_loss,  use_RL=True):
         # First run one gradient descent step for Q1 and Q2
-        self.q_update(data)
-        for p in self.q_params:
-            p.requires_grad = False
 
-        loss_pi, pi_info = self.compute_loss_pi(data)
-        loss_pi += supervised_loss
+        if use_RL:
+            self.q_update(data)
+            for p in self.q_params:
+                p.requires_grad = False
+            loss_pi, pi_info = self.compute_loss_pi(data)
+            loss_pi += supervised_loss
+        else:
+            loss_pi = supervised_loss
         loss_pi.backward()
         self.pi_optimizer.step()
         # Unfreeze Q-networks so you can optimize it at next step.
