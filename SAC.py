@@ -19,7 +19,7 @@ from gym import wrappers
 class SAC_model():
 
     def __init__(self, act_limit, obs_dim, act_dim, hidden_sizes, lr=1e-3, gamma=0.99, alpha=0.2, polyak=0.995,
-                 load=False, exp_name='Exp1', replay_buffer = None, path='saved_models/'):
+                 load=False, exp_name='Exp1', replay_buffer = None, path='saved_models/', curiosity=False, curiosity_weighting = 1000,):
         self.act_limit = act_limit
         self.gamma = gamma
         self.alpha = alpha
@@ -28,8 +28,11 @@ class SAC_model():
         self.exp_name = exp_name
         self.path = path
         self.lr = lr
+        self.curiosity = curiosity
+        self.curiosity_weighting = curiosity_weighting
         self.create_networks(obs_dim, act_dim, hidden_sizes)
         self.replay_buffer = replay_buffer
+
 
         torch.set_num_threads(torch.get_num_threads())
 
@@ -39,6 +42,7 @@ class SAC_model():
         # Action limit for clamping: critically, assumes all dimensions share the same bound!
         # Create actor-critic module and target networks
         self.ac = MLPActorCritic(self.act_limit, obs_dim, act_dim, hidden_sizes=hidden_sizes, activation=activation)
+        print(self.load,'-------------------')
         self.actor  = self.ac # TODO COMPATABILITY
         if self.load:
             self.load_weights()
@@ -59,11 +63,22 @@ class SAC_model():
         self.pi_optimizer = Adam(self.ac.pi.parameters(), lr=self.lr)
         self.q_optimizer = Adam(self.q_params, lr=self.lr)
 
+        if self.curiosity:
+            self.forward_model = mlp([obs_dim + act_dim] + list(hidden_sizes) + [obs_dim]).cuda()
+            self.forward_model_optimizer = Adam(self.forward_model.parameters(), lr=self.lr)
+
     # Set up function for computing SAC Q-losses
     def compute_loss_q(self,data):
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
         q1 = self.ac.q1(o, a)
         q2 = self.ac.q2(o, a)
+
+        if self.curiosity:
+            # update our prediction model
+            o_next = self.forward_model(torch.cat([data['obs'], data['act']], axis=1))
+            prediction_loss = ((o_next - data['obs2']) ** 2).mean()
+            prediction_loss.backward()
+            self.forward_model_optimizer.step()
 
         # Bellman backup for Q functions
         with torch.no_grad():
@@ -75,6 +90,9 @@ class SAC_model():
             q2_pi_targ = self.ac_targ.q2(o2, a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
             backup = r + self.gamma * (1 - d) * (q_pi_targ - self.alpha * logp_a2)
+
+            if self.curiosity:
+                backup += prediction_loss * self.curiosity_weighting # curiosity weighting needs to be relatively large as prediction error is pretty small.
             # only need to do this because of PER
             #self.replay_buffer.update_priorities(data['PER_tree_idxs'], backup.cpu().numpy())
 
@@ -195,7 +213,7 @@ def SAC(env_fn, ac_kwargs=dict(), seed=0,
     # Get Env dimensions
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
-    act_limit = env.action_space.high[0]
+    act_limit = env.action_space.high
     # Experience buffer
     replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 

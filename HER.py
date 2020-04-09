@@ -3,8 +3,7 @@ TF = False
 import gym
 import pybullet
 import pointMass #  the act of importing registers the env.
-import ur5_RL
-import time
+import pandaRL
 from common import *
 if TF:
     from SAC_tf2 import *
@@ -14,15 +13,10 @@ from TD3 import *
 import copy
 import psutil
 import numpy as np
-import time
 from pytorch_shared import *
 import torch
 from common import *
 from tensorboardX import SummaryWriter
-import multiprocessing as mp
-from tqdm import tqdm
-from natsort import natsorted, ns
-from PrioritizedReplayBuffer import PER
 from datetime import datetime
 from BC import find_supervised_loss, load_data
 
@@ -154,7 +148,7 @@ class HERReplayBuffer:
 # This is our training loop.
 def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
         steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=1000,
+        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=100,
         max_ep_len=300, load = False, exp_name = "Experiment_1", render = False, strategy = 'future',
         BC_filepath= None, play=False, num_cpus = 'max'):
 
@@ -166,10 +160,11 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
 
 
     print('Pretestenv')
+    env = env_fn()
     test_env = env_fn()
     print('test_env-',test_env)
     num_cpus = psutil.cpu_count(logical=False)
-    env = env_fn()
+
     #pybullet needs the GUI env to be reset first for our noncollision stuff to work.
     if render:
         print('Rendering Test Rollouts')
@@ -180,7 +175,7 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
     # Get Env dimensions
     obs_dim = env.observation_space.spaces['observation'].shape[0] + env.observation_space.spaces['desired_goal'].shape[0]
     act_dim = env.action_space.shape[0]
-    act_limit = env.action_space.high[0]
+    act_limit = env.action_space.high
     replay_buffer = HERReplayBuffer(env, obs_dim, act_dim, replay_size, n_sampled_goal = 4, goal_selection_strategy = strategy)
 
     model = SAC_model(act_limit, obs_dim, act_dim, ac_kwargs['hidden_sizes'],lr, gamma, alpha, polyak,  load, exp_name, replay_buffer=replay_buffer)
@@ -237,7 +232,7 @@ def training_loop(env_fn,  ac_kwargs=dict(), seed=0,
 
     if play:
         while(1):
-            test_env.activate_movable_goal()
+
             rollout_viz_kwargs['n_steps'] = max_ep_len
             rollout_viz_kwargs['current_total_steps'] += 1
             rollout_trajectories(**rollout_viz_kwargs)

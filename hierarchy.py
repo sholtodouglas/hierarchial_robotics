@@ -5,6 +5,7 @@ import gym
 import pybullet
 import pointMass #  the act of importing registers the env.
 import ur5_RL
+import pandaRL
 import time
 from common import *
 from SAC import *
@@ -90,6 +91,7 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
 
     higher_level_steps = 0
     force_replan = False
+
     for t in range(n_steps):
 
         if t % replan_interval == 0 or force_replan is True:
@@ -118,8 +120,8 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
                     if replay_buffer_high:
                         o_buff_high = np.concatenate([higher_o1['observation'], higher_o1['desired_goal']]) # TODO CONFIRM CORRECTNESS
                         o2_buff_high = np.concatenate([o2['observation'], o2['desired_goal']])
-                        # if higher_level_steps % 5 == 0:
-                        #     action = sub_goal # sometimes keep the originally given action.
+                        if higher_level_steps % sub_goal_testing_interval == 0:
+                            action = sub_goal #  keep the originally given action in the case of subgoal testing, but we don't want to store it in the episdoe where hindsight rewards are recalced, just immediately put it in the replay buffer
                         replay_buffer_high.store(o_buff_high, action, r, o2_buff_high, d) # this r will be the one that is potentially subgoal tested.
 
                         batch = replay_buffer_high.sample_batch(batch_size)
@@ -144,9 +146,10 @@ def rollout_trajectories_hierarchially(n_steps, env, max_ep_len=200, actor_lower
             if use_higher_level:
                 if relative:
                     current_state = o[lower_achieved_state]
-                    sub_goal = np.clip(current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
+                    sub_goal = current_state + actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)) # make it a relative goal.
                 else:
-                    sub_goal = np.clip(actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0)), -env.ENVIRONMENT_BOUNDS, env.ENVIRONMENT_BOUNDS)# make it a relative goal.
+                    sub_goal = actor_higher(np.concatenate([o['observation'], o['desired_goal']], axis=0))
+
 
             else:
 
@@ -266,7 +269,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         test_env.render(mode='human')
         test_env.reset()
 
-    test_env.activate_movable_goal()
+
 
 
 
@@ -282,9 +285,9 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     act_dim_lower = env.action_space.shape[0]
 
     # higher level model
-    act_limit_higher = env.ENVIRONMENT_BOUNDS
+    act_limit_higher = env.observation_space.spaces[lower_achieved_state].high
     high_model = SAC_model(act_limit_higher, obs_dim_higher, act_dim_higher, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_higher')
-    act_limit_lower = env.action_space.high[0]
+    act_limit_lower = env.action_space.high
     low_model = SAC_model(act_limit_lower, obs_dim_lower, act_dim_lower, ac_kwargs['hidden_sizes'], lr, gamma, alpha, polyak, load, exp_name+'_lower')
     # Experience buffer
     replay_buffer_higher = HERReplayBuffer(env, obs_dim_higher, act_dim_higher, replay_size, n_sampled_goal=4,goal_selection_strategy=strategy)
@@ -331,7 +334,7 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
 
     rollout_viz_kwargs = rollout_rl_kwargs.copy()
     rollout_viz_kwargs['actor_lower'] = low_model.actor.get_deterministic_action
-    rollout_viz_kwargs['actor_higher'] = high_model.actor.get_deterministic_action
+    rollout_viz_kwargs['actor_higher'] = high_model.actor.get_deterministic_action #
     rollout_viz_kwargs['train'] = False
     rollout_viz_kwargs['env'] = test_env
     rollout_viz_kwargs['render'] = True
@@ -353,6 +356,13 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     print('Done Initialisation, begin training')
     while steps_collected < total_steps:
         try:
+            # if np.random.random() < 0.5: # half the time, try deterministic anyway
+            #     rollout_rl_kwargs['actor_higher'] = high_model.actor.get_deterministic_action
+            #     rollout_rl_kwargs['actor_lower'] = low_model.actor.get_deterministic_action
+            # else:
+            #     rollout_rl_kwargs['actor_higher'] = high_model.actor.get_stochastic_action
+            #     rollout_rl_kwargs['actor_lower'] = low_model.actor.get_stochastic_action
+
             steps_collected, epoch_ticker = train(rollout_rl_kwargs, steps_collected, epoch_ticker)
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
@@ -366,8 +376,10 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
             elif txt == 's':
                 low_model.save_weights()
                 high_model.save_weights()
-                with open('collected_data/'+exp_name+'rbuf.pickle', 'wb') as handle:
+                with open('collected_data/'+exp_name+'rbuf-high.pickle', 'wb') as handle:
                     pickle.dump(replay_buffer_higher, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                with open('collected_data/'+exp_name+'rbuf-low.pickle', 'wb') as handle:
+                    pickle.dump(replay_buffer_lower, handle, protocol=pickle.HIGHEST_PROTOCOL)
                 print('Saved buff')
             print('Returning to Training.')
 
@@ -401,7 +413,7 @@ if __name__ == '__main__':
     if args.exp_name:
         exp_name = args.exp_name
     else:
-        exp_name = args.exp_name +'_hier-'+ args.env
+        exp_name = '_hier-'+ args.env
 
     # save the current file and config
     save_file(__file__, exp_name, args)

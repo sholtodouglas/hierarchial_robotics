@@ -14,7 +14,7 @@ def combined_shape(length, shape=None):
         return (length,)
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
-def mlp(sizes, activation, output_activation=nn.Identity):
+def mlp(sizes, activation=nn.ReLU, output_activation=nn.Identity):
     layers = []
     for j in range(len(sizes)-1):
         act = activation if j < len(sizes)-2 else output_activation
@@ -81,7 +81,7 @@ class SquashedGaussianMLPActor(nn.Module):
             logp_pi = None
 
         pi_action = torch.tanh(pi_action)
-        pi_action = self.act_limit * pi_action
+        pi_action = torch.tensor(self.act_limit).cuda() * pi_action
 
         return pi_action, logp_pi, pi_distribution
 

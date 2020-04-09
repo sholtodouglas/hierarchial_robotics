@@ -146,7 +146,7 @@ def relay_learning(filepath, env, exp_name, n_steps, batch_size, goal_based, arc
     train_summary_writer, valid_summary_writer = tf.summary.create_file_writer(train_log_dir), tf.summary.create_file_writer(valid_log_dir)
     high_policy = mlp_gaussian_policy(act_dim=act_dim_higher, act_limit=act_limit_higher, hidden_sizes=architecture)
     low_policy = mlp_gaussian_policy(act_dim=act_dim_lower, act_limit=act_limit_lower, hidden_sizes=architecture)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
 
     print('Done Initialisation, begin training')
     steps = 0
