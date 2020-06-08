@@ -14,7 +14,7 @@ python SAC.py --env []
 ```
 To load saved weights, use --load True, which will load from the same --exp_name.
 
-Other algorithms are HER (using SAC), TD3, hierarchy (based on Levy et al's Hierarchial Actor Critic). 
+Other algorithms are HER.py (using SAC), TD3.py, hierarchy.py (based on Levy et al's Hierarchial Actor Critic). All follow the same interface as SAC. 
 
 Once you have trained a model, you can use collect_expert.py to collect --n_steps on --env using the model loaded with --exp_name. 
 
