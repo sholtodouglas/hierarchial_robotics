@@ -101,7 +101,7 @@ if __name__ == '__main__':
 	import argparse
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--env', type=str, default='pointMass-v0')
-	parser.add_argument('--exp_name', type=str, default=None)
+	parser.add_argument('--exp_name', type=str, default='experiment_2')
 	parser.add_argument('--n_steps', type=int, default=400)
 	parser.add_argument('--render', type=str2bool, default=True)
 	parser.add_argument('--hierarchial', type=str2bool,default=False)
@@ -112,10 +112,7 @@ if __name__ == '__main__':
 
 
 	args = parser.parse_args()
-	if args.exp_name is None:
-		exp_name = 'HER2_'+args.env+'_Hidden_'+str(args.hid)+'l_'+str(args.l)
-	else:
-		exp_name = args.exp_name
+	exp_name = args.exp_name + '_HER_'+args.env
 	env = gym.make(args.env)
 	collect_expert(env, exp_name, args.n_steps, args.render, args.hierarchial, args.flatten, args.max_ep_len)
 

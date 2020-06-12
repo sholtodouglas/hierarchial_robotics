@@ -1,5 +1,9 @@
 
 
+import os, inspect
+currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+print("current_dir=" + currentdir)
+os.sys.path.insert(0, currentdir)
 
 from copy import deepcopy
 import itertools
@@ -100,6 +104,16 @@ class SAC_model():
         loss_q1 = ((q1 - backup) ** 2).mean()
         loss_q2 = ((q2 - backup) ** 2).mean()
         loss_q = loss_q1 + loss_q2
+
+        # Conservative Q Loss
+        # We want to min the q value of random actions, while maximising the q values of data distrib
+        a_random = (torch.FloatTensor(o.shape[0], a.shape[-1]).uniform_(-1, 1)*self.act_limit).cuda()
+        q_random = torch.log(torch.exp(self.ac.q1(o, a_random)).mean() + torch.exp(self.ac.q2(o, a_random)).mean())
+
+        q_data = self.ac.q1(o, a).mean() + self.ac.q2(o, a).mean()
+        CQL = q_random  - q_data # We are minimisng this
+
+        loss_q += CQL
 
         # Useful info for logging
         q_info = dict(Q1Vals=q1.detach().cpu().numpy(),

@@ -9,6 +9,9 @@ import torch.nn.functional as F
 from torch.distributions.normal import Normal
 from PrioritizedReplayBuffer import PER
 
+def tensor(x):
+    return torch.as_tensor(x, dtype=torch.float32).cuda()
+
 def combined_shape(length, shape=None):
     if shape is None:
         return (length,)

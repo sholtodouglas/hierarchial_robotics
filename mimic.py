@@ -13,7 +13,7 @@ from common import *
 from tensorboardX import SummaryWriter
 from datetime import datetime
 from BC import find_supervised_loss, load_data
-
+import time
 
 def mimic_rollouts(n_steps, env, trajectory, max_ep_len=200,actor=None, replay_buffer=None, summary_writer=None,
                          current_total_steps=0,
@@ -38,8 +38,7 @@ def mimic_rollouts(n_steps, env, trajectory, max_ep_len=200,actor=None, replay_b
 
     o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0
     if start_state is not None:
-        env.initialize_start_pos(start_state)  # init vel to 0, but x and y to the desired pos.
-        o['observation'] = start_state
+        o = env.reset(start_state)
     if s_g is not None:
         env.reset_goal_pos(s_g)
 
@@ -53,7 +52,6 @@ def mimic_rollouts(n_steps, env, trajectory, max_ep_len=200,actor=None, replay_b
         past_state = [None]
 
     for t in range(n_steps):
-
         if actor == 'random':
             a = env.action_space.sample()
         elif replay_trajectory is not None:  # replay a trajectory that we've fed in so that we can make sure this is properly deterministic and compare it to our estimated action based trajectory/
@@ -74,8 +72,12 @@ def mimic_rollouts(n_steps, env, trajectory, max_ep_len=200,actor=None, replay_b
         # Step the env
         o2, r, d, _ = env.step(a)
 
+        # mimicry reward
+        r = -np.linalg.norm(o2['full_positional_state'] - trajectory[t])
+
         if render:
             env.render(mode='human')
+            env.visualise_sub_goal(trajectory[t], sub_goal_state = 'full_positional_state')
 
         ep_ret += r
         ep_len += 1
@@ -140,25 +142,28 @@ def select_trajectory(data):
     idx = np.random.choice(len(data['acts']))
     start = np.random.choice(int(len(data['acts'][idx])*0.2))
     length = len(data['acts'][idx])
-    end = np.random.randint( int(length)*0.8, length)
-    trajectory_ags = data['achieved_goals'][idx, start:end, :]
-    start = data['obs'][idx, start, :]
+    end = np.random.randint( int(length*0.8), length)
+    trajectory_ags = data['full_positional_states'][idx, start:end, :]
+    init = data['obs'][idx, start, :]
     goal = data['achieved_goals'][idx, end, :]
-    return start, end, trajectory_ags
+    acts = data['acts'][idx, start:end, :]
+    return init, goal, trajectory_ags, acts
 
 
+# python mimic.py --env pointMass-v0 --BC_filepath collected_data/10000experiment_2_HER_pointMass-v0.npz
 
 def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                   steps_per_epoch=10000, epochs=100, replay_size=int(1e6), gamma=0.99,
-                  polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=100,
+                  polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=0,
                   max_ep_len=300, load=False, exp_name="Experiment_1", render=False,
                   BC_filepath=None, play=False):
 
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    env = env_fn()
+
     test_env = env_fn()
+    env = env_fn()
 
     # pybullet needs the GUI env to be reset first for our noncollision stuff to work.
     if render:
@@ -198,8 +203,6 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     #     rollout_rl_kwargs['supervised_kwargs'], rollout_rl_kwargs['supervised_func'] = BC_kwargs, find_supervised_loss
 
     data = np.load(BC_filepath)
-    rollout_rl_kwargs['data'] = data
-
     rollout_random_kwargs = rollout_rl_kwargs.copy()
     rollout_random_kwargs['actor'] = 'random'
     rollout_random_kwargs['n_steps'] = start_steps
@@ -211,13 +214,15 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
     rollout_viz_kwargs['replay_buffer'] = None
     rollout_viz_kwargs['actor'] = model.actor.get_deterministic_action
 
-    def train(rollout_kwargs, steps_collected, epoch_ticker, data):
-        start, end, trajectory_ags = select_trajectory(data)
-        rollout_rl_kwargs['start_state'] = start
-        rollout_rl_kwargs['s_g'] = end
-        rollout_rl_kwargs['trajectory'] = trajectory_ags
+    def rollout(rollout_kwargs, steps_collected, epoch_ticker, data):
+        start, end, trajectory_full_pos, acts = select_trajectory(data)
+        rollout_kwargs['start_state'] = start
+        rollout_kwargs['s_g'] = end
+        rollout_kwargs['trajectory'] = trajectory_full_pos
+        #rollout_kwargs['replay_trajectory'] = acts # activate for reenactment of example acts
+        rollout_kwargs['n_steps'] = len(acts)
         #todo - check if it works off a dataset of densy bois. Do per timestep reward. 
-        episodes = rollout_trajectories(**rollout_kwargs)
+        episodes = mimic_rollouts(**rollout_kwargs)
         steps_collected += episodes['n_steps']
         if steps_collected >= epoch_ticker:
             model.save_weights()
@@ -229,25 +234,19 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
         while (1):
             rollout_viz_kwargs['n_steps'] = max_ep_len
             rollout_viz_kwargs['current_total_steps'] += 1
+            steps_collected, epoch_ticker = rollout(rollout_viz_kwargs, steps_collected, epoch_ticker, data)
 
-            mimic_rollouts(**rollout_viz_kwargs)
-
-    if not load:
-        # collect some initial random steps to initialise
-        steps_collected, epoch_ticker = train(rollout_random_kwargs, steps_collected, epoch_ticker, data)
-
-    print('Random Init Done')
     while steps_collected < total_steps:
         try:
             rollout_rl_kwargs['current_total_steps'] = steps_collected
-            steps_collected, epoch_ticker = train(rollout_rl_kwargs, steps_collected, epoch_ticker, data)
+            steps_collected, epoch_ticker = rollout(rollout_rl_kwargs, steps_collected, epoch_ticker, data)
 
         except KeyboardInterrupt:
             txt = input("\nWhat would you like to do: ")
             if txt.isnumeric():
-                rollout_viz_kwargs['n_steps'] = max_ep_len * int(txt)
-                rollout_viz_kwargs['current_total_steps'] = steps_collected
-                mimic_rollouts(**rollout_viz_kwargs)
+                for i in range(0,int(txt)):
+                    rollout_rl_kwargs['current_total_steps'] = steps_collected
+                    steps_collected, epoch_ticker = rollout(rollout_viz_kwargs, steps_collected, epoch_ticker, data)
             print('Returning to Training.')
             if txt == 'q':
                 raise Exception

@@ -324,9 +324,10 @@ def training_loop(env_fn, ac_kwargs=dict(), seed=0,
                     'lower_achieved_state':lower_achieved_state, 'exp_name':exp_name,'substitute_action':substitute_action,
                     'current_total_steps':steps_collected, 'use_higher_level': use_higher_level, 'summary_writer':summary_writer,
                     'return_episode':True, 'sub_goal_testing_interval':3, 'relative': relative,
-                    'sub_goal_tester':low_model.actor.get_deterministic_action, 'replay_buffer_low': replay_buffer_lower,
+                    'sub_goal_tester':None, 'replay_buffer_low': replay_buffer_lower,
                     'replay_buffer_high': replay_buffer_higher, 'model_low':low_model, 'model_high':high_model, 'batch_size':batch_size}
 
+        # low_model.actor.get_deterministic_action
     rollout_random_kwargs = rollout_rl_kwargs.copy()
     rollout_random_kwargs['sub_goal_tester'] = None
     rollout_random_kwargs['actor_lower'] = 'random'
